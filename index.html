@@ -177,6 +177,8 @@ body { padding-top: calc(16px + env(safe-area-inset-top, 0px)); padding-bottom: 
   </section>
 </div>
 <div id="sheetHost"></div>
+<script src="supabase.js"></script>
+<script src="config.js"></script>
 <script>
 // ===== Núcleo: leitura de extratos e classificação =====
 const KINDS = {
@@ -321,23 +323,112 @@ const KCOLOR = { gasto: "k-gasto", entrada: "k-entrada", caixinha: "k-caixinha",
 const fmt = v => (v < -0.004 ? "−" : "") + "R$ " + Math.abs(v).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const $ = id => document.getElementById(id);
-const KEY = "caderno-gastos-v1";
+const KEY = "caderno-gastos-cache-v2";
+const CFG = window.CADERNO_CONFIG || {};
+const sb = (window.supabase && CFG.url) ? window.supabase.createClient(CFG.url, CFG.key, { auth: { persistSession: true, autoRefreshToken: true, storageKey: "caderno-gastos-auth" } }) : null;
 
-const state = { tx: [], rules: {}, budgets: {}, settings: { ownNames: [] }, wallet: null, month: null, filter: "todos", pay: "tudo" };
+const state = { tx: [], rules: {}, budgets: {}, settings: { ownNames: [] }, wallet: null, month: null, filter: "todos", pay: "tudo", user: null };
+const dirty = { tx: new Map(), cfg: new Set() };
 
-// ===== armazenamento no aparelho =====
-function load() {
+// ===== armazenamento: nuvem (Supabase) + cópia no aparelho para abrir rápido e offline =====
+function cacheKey() { return KEY + ":" + (state.user ? state.user.id : "anon"); }
+function loadCache() {
   try {
-    const d = JSON.parse(localStorage.getItem(KEY) || "null");
+    const d = JSON.parse(localStorage.getItem(cacheKey()) || "null");
     if (d) Object.assign(state, { tx: d.tx || [], rules: d.rules || {}, budgets: d.budgets || {}, settings: d.settings || { ownNames: [] }, wallet: d.wallet || null });
-  } catch (e) { showStatus("Não consegui ler os dados salvos neste aparelho."); }
+  } catch (e) { }
 }
-function persist() {
+function saveCache() {
+  try { localStorage.setItem(cacheKey(), JSON.stringify({ tx: state.tx, rules: state.rules, budgets: state.budgets, settings: state.settings, wallet: state.wallet })); } catch (e) { }
+}
+function markTx(list) { for (const t of list) dirty.tx.set(t.id, t); }
+function markCfg(...names) { for (const n of names) dirty.cfg.add(n); }
+
+let syncing = false;
+async function persist() {
+  saveCache();
+  if (!sb || !state.user || syncing) return;
+  syncing = true;
   try {
-    localStorage.setItem(KEY, JSON.stringify({ tx: state.tx, rules: state.rules, budgets: state.budgets, settings: state.settings, wallet: state.wallet }));
-  } catch (e) { toast("Não consegui salvar. O armazenamento do aparelho pode estar cheio."); }
+    while (dirty.tx.size || dirty.cfg.size) {
+      const rows = [];
+      for (const [id, t] of [...dirty.tx].slice(0, 500)) { const { id: _, ...dados } = t; rows.push({ user_id: state.user.id, tipo: "tx", id, dados }); dirty.tx.delete(id); }
+      if (!rows.length) for (const n of [...dirty.cfg]) { rows.push({ user_id: state.user.id, tipo: "config", id: n, dados: { valor: state[n] ?? null } }); dirty.cfg.delete(n); }
+      const { error } = await sb.from("registros").upsert(rows, { onConflict: "user_id,tipo,id" });
+      if (error) { for (const r of rows) r.tipo === "tx" ? dirty.tx.set(r.id, { id: r.id, ...r.dados }) : dirty.cfg.add(r.id); throw error; }
+    }
+    showStatus("");
+  } catch (e) {
+    showStatus("Sem conexão com a nuvem. As mudanças ficaram guardadas neste aparelho e sobem quando a internet voltar.");
+  } finally { syncing = false; }
 }
+
+async function pull() {
+  if (!sb || !state.user) return;
+  const all = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await sb.from("registros").select("tipo,id,dados").range(from, from + 999);
+    if (error) { showStatus("Não consegui buscar seus dados na nuvem. Mostrando a última cópia deste aparelho."); return; }
+    all.push(...data);
+    if (data.length < 1000) break;
+  }
+  const tx = [], cfg = {};
+  for (const r of all) r.tipo === "tx" ? tx.push({ id: r.id, ...r.dados }) : (cfg[r.id] = r.dados.valor);
+  // mantém o que ainda não subiu
+  for (const t of dirty.tx.values()) { const i = tx.findIndex(x => x.id === t.id); i >= 0 ? (tx[i] = t) : tx.push(t); }
+  state.tx = tx;
+  for (const n of ["rules", "budgets", "settings", "wallet"]) if (!dirty.cfg.has(n) && n in cfg) state[n] = cfg[n];
+  state.rules ||= {}; state.budgets ||= {}; state.settings ||= { ownNames: [] };
+  saveCache(); render();
+}
+
+async function wipeCloud() {
+  if (!sb || !state.user) return;
+  const { error } = await sb.from("registros").delete().eq("user_id", state.user.id);
+  if (error) toast("Não consegui apagar na nuvem. Tente de novo com internet.");
+}
+
 function showStatus(msg) { $("status").textContent = msg; $("status").hidden = !msg; }
+
+// ===== entrar =====
+function openLogin(msg) {
+  const s = sheet(`<div><span class="label">Caderno de Gastos</span><h2>Entre para ver seus gastos</h2></div>
+    <span class="hint">${msg || "Use o mesmo e-mail e senha no iPhone e no computador. Os dados aparecem nos dois."}</span>
+    <label class="label" for="lEmail">E-mail</label><input type="text" id="lEmail" inputmode="email" autocomplete="username" autocapitalize="off" value="${esc(localStorage.getItem("caderno-email") || "")}">
+    <label class="label" for="lPass">Senha</label><input type="password" id="lPass" autocomplete="current-password" placeholder="Mínimo 6 caracteres">
+    <div class="row"><button class="btn ghost" id="lSignup">Criar conta</button><button class="btn" id="lLogin">Entrar</button></div>`, true);
+  const go = async signup => {
+    const email = s.querySelector("#lEmail").value.trim(), password = s.querySelector("#lPass").value;
+    if (!email || password.length < 6) { toast("Preencha o e-mail e uma senha com pelo menos 6 caracteres"); return; }
+    try { localStorage.setItem("caderno-email", email); } catch (e) { }
+    const r = signup ? await sb.auth.signUp({ email, password, options: { emailRedirectTo: location.origin + location.pathname } })
+      : await sb.auth.signInWithPassword({ email, password });
+    if (r.error) {
+      const m = r.error.message || "";
+      toast(/confirm/i.test(m) ? "Confirme o e-mail primeiro: abra o link que o Supabase enviou." : /invalid/i.test(m) ? "E-mail ou senha incorretos." : /registered/i.test(m) ? "Esse e-mail já tem conta. Toque em Entrar." : "Não deu certo: " + m);
+      return;
+    }
+    if (signup && !r.data.session) { openLogin("Conta criada. Abra o e-mail de confirmação que chegou, toque no link e depois volte aqui e entre."); return; }
+  };
+  s.querySelector("#lLogin").onclick = () => go(false);
+  s.querySelector("#lSignup").onclick = () => go(true);
+}
+
+async function onUser(user) {
+  const changed = !onUser.done || (user && user.id) !== (state.user && state.user.id);
+  onUser.done = true;
+  state.user = user;
+  if (!changed) return;
+  if (user) {
+    close();
+    Object.assign(state, { tx: [], rules: {}, budgets: {}, settings: { ownNames: [] }, wallet: null });
+    loadCache(); render();
+    await pull(); persist();
+  } else {
+    Object.assign(state, { tx: [], rules: {}, budgets: {}, settings: { ownNames: [] }, wallet: null });
+    render(); openLogin();
+  }
+}
 
 // ===== cálculo =====
 const isCred = t => t.source === "cartao";
@@ -428,11 +519,11 @@ $("menuBtn").onclick = openMenu;
 
 let toastT;
 function toast(msg) { let el = document.querySelector(".toast"); if (!el) { el = document.createElement("div"); el.className = "toast"; document.body.append(el); } el.textContent = msg; clearTimeout(toastT); toastT = setTimeout(() => el.remove(), 3400); }
-function sheet(html) {
+function sheet(html, locked) {
   $("sheetHost").innerHTML = `<div class="sheet-bg"><div class="sheet" role="dialog" aria-modal="true">${html}</div></div>`;
   const bg = $("sheetHost").firstChild;
-  bg.onclick = e => { if (e.target === bg || e.target.closest("[data-close]")) close(); };
-  document.addEventListener("keydown", escClose);
+  bg.onclick = e => { if (!locked && (e.target === bg || e.target.closest("[data-close]"))) close(); };
+  if (!locked) document.addEventListener("keydown", escClose);
   return bg.querySelector(".sheet");
 }
 function escClose(e) { if (e.key === "Escape") close(); }
@@ -464,9 +555,9 @@ function openTx(t) {
     const all = s.querySelector("#allChk")?.checked;
     close();
     const targets = all ? state.tx.filter(x => x.key === t.key) : [t];
-    if (all) state.rules[t.key] = { kind, cat };
+    if (all) { state.rules[t.key] = { kind, cat }; markCfg("rules"); }
     for (const x of targets) { x.kind = kind; x.cat = cat; x.manual = true; }
-    persist(); render();
+    markTx(targets); persist(); render();
     toast(targets.length > 1 ? `${targets.length} movimentações atualizadas` : "Classificação salva");
   };
 }
@@ -479,7 +570,7 @@ function openBudget(cat) {
   s.querySelector("#saveBud").onclick = () => {
     const v = parseFloat(String(s.querySelector("#budIn").value).replace(",", "."));
     if (v > 0) state.budgets[cat] = v; else delete state.budgets[cat];
-    close(); persist(); render();
+    markCfg("budgets"); close(); persist(); render();
     toast(v > 0 ? "Limite salvo" : "Limite removido");
   };
 }
@@ -496,7 +587,7 @@ function openWallet() {
     const d = s.querySelector("#wDate").value.trim();
     if (isNaN(v) || !/^\d{4}-\d{2}-\d{2}$/.test(d)) { toast("Confira o valor e a data"); return; }
     state.wallet = { saldo: v, data: d };
-    close(); persist(); render();
+    markCfg("wallet"); close(); persist(); render();
     toast("Saldo da carteira atualizado");
   };
 }
@@ -504,19 +595,23 @@ function openWallet() {
 function openMenu() {
   const n = state.tx.length;
   const s = sheet(`<div><span class="label">Caderno de Gastos</span><h2>Seus dados</h2></div>
-    <span class="hint">${n} movimentações guardadas só neste iPhone. Faça um backup de vez em quando: se o app for apagado, os dados vão junto.</span>
+    <span class="hint">${n} movimentações, guardadas na nuvem na conta ${esc(state.user ? state.user.email : "")}. Aparecem em qualquer aparelho em que você entrar com ela.</span>
     <div class="menu">
+      <button id="mSync">Atualizar agora<small>Busca o que você mudou em outro aparelho</small></button>
       <button id="mExport">Fazer backup<small>Gera um arquivo para salvar no app Arquivos ou no iCloud</small></button>
       <button id="mImport">Restaurar backup<small>Escolha um arquivo .json gerado por este app</small></button>
-      <button id="mReset" class="danger">Apagar todos os dados<small>Remove movimentações, regras, limites e carteira deste aparelho</small></button>
+      <button id="mOut">Sair da conta<small>Os dados continuam na nuvem</small></button>
+      <button id="mReset" class="danger">Apagar todos os dados<small>Remove movimentações, regras, limites e carteira da nuvem e dos aparelhos</small></button>
     </div>
     <div class="row"><button class="btn ghost" data-close>Fechar</button></div>`);
   s.querySelector("#mExport").onclick = exportBackup;
+  s.querySelector("#mSync").onclick = async () => { close(); await persist(); await pull(); toast("Atualizado"); };
+  s.querySelector("#mOut").onclick = async () => { close(); await persist(); await sb.auth.signOut(); };
   s.querySelector("#mImport").onclick = () => { close(); $("file").click(); };
   s.querySelector("#mReset").onclick = () => {
     const s2 = sheet(`<h2>Apagar tudo?</h2><span class="hint">Isso não pode ser desfeito. Se quiser guardar uma cópia, faça um backup antes.</span>
       <div class="row"><button class="btn ghost" data-close>Cancelar</button><button class="btn" id="yes" style="background:var(--out)">Apagar tudo</button></div>`);
-    s2.querySelector("#yes").onclick = () => { Object.assign(state, { tx: [], rules: {}, budgets: {}, settings: { ownNames: [] }, wallet: null, month: null }); persist(); close(); render(); toast("Dados apagados"); };
+    s2.querySelector("#yes").onclick = async () => { Object.assign(state, { tx: [], rules: {}, budgets: {}, settings: { ownNames: [] }, wallet: null, month: null }); dirty.tx.clear(); dirty.cfg.clear(); saveCache(); close(); render(); await wipeCloud(); toast("Dados apagados"); };
   };
 }
 
@@ -535,6 +630,7 @@ function importBackup(d) {
   const byId = new Map(state.tx.map(t => [t.id, t]));
   let n = 0;
   for (const t of d.tx || []) { if (!byId.has(t.id)) n++; byId.set(t.id, t); }
+  markTx(d.tx || []); markCfg("rules", "budgets", "settings", "wallet");
   state.tx = [...byId.values()];
   Object.assign(state.rules, d.rules || {});
   Object.assign(state.budgets, d.budgets || {});
@@ -558,7 +654,8 @@ $("file").onchange = async e => {
     for (const r of rows) {
       if (!r.id) r.id = "m-" + mkey(r.date + r.memo + r.amount);
       if (have.has(r.id)) { repetidas++; continue; }
-      state.tx.push({ ...r, ...classify(r, state.rules, state.settings), manual: false });
+      const nt = { ...r, ...classify(r, state.rules, state.settings), manual: false };
+      state.tx.push(nt); markTx([nt]);
       have.add(r.id); novas++;
     }
   }
@@ -566,11 +663,16 @@ $("file").onchange = async e => {
   persist();
   state.month = months().slice(-1)[0];
   render();
-  toast(backup ? `Backup restaurado · ${backup} movimentações novas` : `${novas} novas · ${repetidas} já estavam no app`);
+  toast(backup ? `Backup importado · ${backup} movimentações novas` : `${novas} novas · ${repetidas} já estavam no app`);
 };
 
-load();
 render();
+if (!sb) showStatus("O app não encontrou a configuração da nuvem (config.js).");
+else {
+  sb.auth.onAuthStateChange((_ev, session) => { setTimeout(() => onUser(session ? session.user : null), 0); });
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && state.user) { persist().then(pull); } });
+  window.addEventListener("online", () => persist());
+}
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});
 </script>
