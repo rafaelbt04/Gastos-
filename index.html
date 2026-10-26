@@ -1078,7 +1078,10 @@ function faturaCiclos(st, today) {
   const F = +p.cartao.fechamento, V = +p.cartao.vencimento;
   const ciclo = closeYM => {
     const close = dateIn(closeYM, F), prevClose = dateIn(addMonths(closeYM, -1), F), venc = faturaVenc(closeYM, F, V);
-    const doCiclo = t => t.fatura ? Math.abs(daysBetween(t.fatura, venc)) <= 5 : (t.date >= prevClose && t.date < close);
+    // ciclo começa no dia do fechamento (27) e vai até a véspera do próximo (26).
+    // O Nubank data as parcelas na véspera do início do ciclo (ex.: 26/09 na fatura que começa em 27/09).
+    const dataCiclo = t => /parcela\s*\d+\s*\/\s*\d+/i.test(t.memo || "") ? addDays(t.date, 1) : t.date;
+    const doCiclo = t => t.fatura ? Math.abs(daysBetween(t.fatura, venc)) <= 5 : (dataCiclo(t) >= prevClose && dataCiclo(t) < close);
     const itens = (st.tx || []).filter(t => t.source === "cartao" && t.kind === "gasto" && doCiclo(t));
     const compras = r2(-sum(itens.filter(t => t.amount < 0), t => t.amount));
     const estornos = r2(sum(itens.filter(t => t.amount > 0), t => t.amount));
@@ -1834,6 +1837,7 @@ function renderPerfil() {
   for (const s of document.querySelectorAll("[data-grp]")) s.onchange = () => { const g = { ...(state.perfil?.grupos || {}) }; g[s.dataset.grp] = s.value; setPerfil({ grupos: g }); persist(); toast("Grupo atualizado"); };
 }
 
+const APP_VERSION = "10";
 // ===== utilidades =====
 const fmt = v => (v < -0.004 ? "−" : "") + "R$ " + Math.abs(v).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmt0 = v => (v < -0.5 ? "−" : "") + "R$ " + Math.abs(v).toLocaleString("pt-BR", { maximumFractionDigits: 0 });
@@ -2132,7 +2136,7 @@ function renderImportar() {
   const h = (state.imports || []).slice(-8).reverse();
   $("cardHist").innerHTML = `<h2>Últimas importações</h2>` + (h.length ? `<div class="hist">${h.map(x => `<div><span>${esc(x.arquivo)} ${x.tipo === "cartao" ? '<span class="badge">fatura</span>' : x.tipo === "backup" ? '<span class="badge b2">backup</span>' : ""}</span><span class="num">+${x.novas}</span><small>${new Date(x.em).toLocaleString("pt-BR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })} · ${x.novas} novas, ${x.repetidas} já estavam</small></div>`).join("")}</div>` : `<p class="hint">Nenhuma ainda. As próximas aparecem aqui.</p>`);
   const n = state.tx.length;
-  $("cardAccount").innerHTML = `<h2>Conta e dados</h2><span class="hint">${n} movimentações na nuvem${state.user ? `, na conta <b>${esc(state.user.email)}</b>` : ""}. Aparecem em qualquer aparelho em que você entrar.</span>
+  $("cardAccount").innerHTML = `<div class="card-head"><h2>Conta e dados</h2><span class="hint">versão ${APP_VERSION}</span></div><span class="hint">${n} movimentações na nuvem${state.user ? `, na conta <b>${esc(state.user.email)}</b>` : ""}. Aparecem em qualquer aparelho em que você entrar.</span>
     <div class="menu">
       <button id="mSync">Atualizar agora<small>Busca o que mudou em outro aparelho</small></button>
       <button id="mExport">Fazer backup<small>Gera um arquivo .json para guardar no iCloud ou no computador</small></button>
@@ -2386,7 +2390,15 @@ else {
   window.addEventListener("online", () => persist());
 }
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
-if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});
+if ("serviceWorker" in navigator && location.protocol === "https:") {
+  navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).then(reg => {
+    reg.update().catch(() => {});
+    document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") reg.update().catch(() => {}); });
+  }).catch(() => {});
+  // quando uma versão nova assume, recarrega uma vez para usar o código novo
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => { if (reloaded) return; reloaded = true; location.reload(); });
+}
 </script>
 </body>
 </html>
