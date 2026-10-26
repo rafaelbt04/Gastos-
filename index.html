@@ -340,6 +340,11 @@ select, input[type=number], input[type=text], input[type=password], input[type=d
 .imp .drop .ico { width: 46px; height: 46px; border-radius: 14px }
 .imp .drop .ico.cred { background: var(--cred); color: #fff }
 #impCartao .drop.over, #impCartao .drop:hover { border-color: var(--cred); background: color-mix(in srgb, var(--cred) 10%, var(--surface)) }
+
+.fats { display: flex; flex-direction: column; gap: 10px }
+.fat { background: var(--surface-2); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px }
+.fat .fh { display: flex; justify-content: space-between; gap: 8px; align-items: center; flex-wrap: wrap; font-size: .9rem }
+.fat .rows { font-size: .84rem }
 </style>
 </head>
 <body>
@@ -497,6 +502,7 @@ function titleCase(s) {
 function extractMerchant(memo) {
   const m = String(memo).trim();
   let r;
+  if ((r = m.match(/^Estorno de compra \((.+)\)$/i))) return r[1].trim();
   if ((r = m.match(/^Compra no d[ée]bito(?: via NuPay)? - (.+)$/i))) return r[1].trim();
   if ((r = m.match(/^Transfer[êe]ncia (?:enviada|recebida)(?: pelo Pix)? - ([^-]+?) - /i))) return r[1].trim();
   if ((r = m.match(/^Transfer[êe]ncia (?:enviada|recebida)(?: pelo Pix)? - (.+)$/i))) return r[1].trim();
@@ -510,7 +516,7 @@ const KEYWORDS = [
   [/sushi|churrasc|restau|lanch|acai|granlu|ifood|pizza|burger|padaria|lanchonete|cafe|food|esfiha|pastel|aspen/, "Alimentação"],
   [/\bbar\b|poco loco|dinamite|chopp|pub\b|boteco|adega/, "Bares e saídas"],
   [/conveniencia|oxxo|est comercial|\bmercado\b|minimercado|supermerc|carrefour|pao de acucar|atacad|assai|hortifruti/, "Conveniência e mercado"],
-  [/\bvlt\b|uber|\b99\b|onibus|metro|posto|combust|estaciona|sem parar|veloe|emtu/, "Transporte"],
+  [/\bvlt\b|uber|\b99\b|onibus|metro|posto|combust|estaciona|sem parar|veloe|emtu|renovias|pedagio|autoban|conectcar|ccr /, "Transporte"],
   [/sport|academia|smart ?fit|cinema|ingresso|teatro/, "Esporte e lazer"],
   [/bytedance|netflix|spotify|apple|google|prime video|disney|hbo|youtube|icloud|chatgpt|openai|anthropic|claude/, "Apps e assinaturas"],
   [/appmax|aspen|jim com|mercadolivre|mercado livre|shopee|amazon|magalu|aliexpress|shein|kabum|pagseguro|paypal/, "Compras online"],
@@ -523,7 +529,7 @@ const KEYWORDS = [
 function classify(row, rules, settings) {
   const memo = row.memo || "";
   const nm = norm(memo);
-  const merchant = row.source === "cartao" ? String(row.memo).replace(/\s*-\s*parcela\s*\d+\/\d+\s*$/i, "") : extractMerchant(memo);
+  const merchant = row.source === "cartao" ? String(row.memo).replace(/\s*-\s*parcela\s*\d+\/\d+\s*$/i, "").replace(/^Estorno de compra \((.+)\)$/i, "$1") : extractMerchant(memo);
   const key = mkey(merchant);
   const base = { merchant: titleCase(merchant), key };
   if (/^(aplicacao|resgate) rdb/.test(nm)) return { ...base, merchant: "Caixinha", key: "caixinha", kind: "caixinha", cat: "Caixinha" };
@@ -580,7 +586,15 @@ function csvRows(text) {
   return rows.filter(r => r.some(x => x.trim() !== ""));
 }
 
-function parseCSV(text) {
+// "12,90" · "- 198,00" · "1.234,56" · "12.90" · "-5" → número
+function parseMoneyBR(v) {
+  let x = String(v ?? "").trim().replace(/\s+/g, "").replace(/^R\$/, "");
+  if (!x) return null;
+  const neg = /^-|^\(.*\)$/.test(x); x = x.replace(/[-()+]/g, "");
+  if (x.includes(",")) x = x.replace(/\./g, "").replace(",", ".");
+  const n = parseFloat(x); return isNaN(n) ? null : (neg ? -n : n);
+}
+function parseCSV(text, name) {
   const rows = csvRows(text.replace(/^﻿/, ""));
   if (!rows.length) return [];
   const h = rows[0].map(norm);
@@ -595,13 +609,16 @@ function parseCSV(text) {
     }
   } else if (h.includes("title") && h.includes("amount")) { // fatura do cartão: date,title,amount
     const iD = h.indexOf("date"), iT = h.indexOf("title"), iA = h.indexOf("amount");
+    const venc = (/(\d{4}-\d{2}-\d{2})/.exec(name || "") || [])[1] || null; // Nubank_AAAA-MM-DD.csv = vencimento
     const seen = {};
     for (const r of rows.slice(1)) {
-      const amt = parseFloat(String(r[iA]).replace(",", "."));
-      if (!r[iD] || isNaN(amt)) continue;
+      const amt = parseMoneyBR(r[iA]);
+      if (!r[iD] || amt == null) continue;
       const base = "c-" + mkey(r[iD] + r[iT] + amt).slice(0, 80);
       seen[base] = (seen[base] || 0) + 1;
-      out.push({ id: base + "-" + seen[base], date: r[iD].slice(0, 10), amount: -amt, memo: r[iT], source: "cartao" });
+      const row = { id: base + "-" + seen[base], date: r[iD].slice(0, 10), amount: -amt, memo: r[iT], source: "cartao" };
+      if (venc) row.fatura = venc;
+      out.push(row);
     }
   }
   return out;
@@ -671,7 +688,7 @@ function txSig(t) { return t.date + "|" + Math.round(t.amount * 100) + "|" + nor
 
 function parseStatement(name, text) {
   if (/\.ofx$/i.test(name) || /<OFX>/i.test(text)) return parseOFX(text);
-  return parseCSV(text);
+  return parseCSV(text, name);
 }
 
 if (typeof module !== "undefined") module.exports = { parseNubankPDF, txSig, classify, parseStatement, mkey, norm, KINDS, CATS_GASTO, CATS_ENTRADA };
@@ -1050,25 +1067,45 @@ function plano(st, ym, today) {
 function fmtR(v) { return "R$ " + (+v || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
 
 // ---------- fatura do cartão ----------
-// Ciclo: compras de (fechamento anterior, fechamento] vencem no vencimento seguinte.
+// Ciclo: compras feitas do dia do fechamento do mês anterior até a véspera do fechamento
+// deste mês entram na fatura que fecha agora (ex.: fecha 27 → de 27/09 a 26/10).
+// Lançamentos importados de uma fatura CSV (Nubank_AAAA-MM-DD.csv) carregam o vencimento
+// e ficam SEMPRE nessa fatura, como no app do banco (vale para parcelas e estornos).
+function faturaVenc(closeYM, F, V) { return V > F ? dateIn(closeYM, V) : dateIn(addMonths(closeYM, 1), V); }
+function faturaDaData(d, F, V) { const ym = ymOf(d); const closeYM = d < dateIn(ym, F) ? ym : addMonths(ym, 1); return faturaVenc(closeYM, F, V); }
 function faturaCiclos(st, today) {
   const p = perfilOf(st); if (!p.cartao || !p.cartao.fechamento || !p.cartao.vencimento) return null;
   const F = +p.cartao.fechamento, V = +p.cartao.vencimento;
   const ciclo = closeYM => {
-    const close = dateIn(closeYM, F), prevClose = dateIn(addMonths(closeYM, -1), F);
-    const venc = V > F ? dateIn(closeYM, V) : dateIn(addMonths(closeYM, 1), V);
-    const compras = (st.tx || []).filter(t => t.source === "cartao" && t.kind === "gasto" && t.date > prevClose && t.date <= close);
-    const real = r2(-sum(compras, t => t.amount));
-    // previsões no cartão ainda não lançadas dentro do ciclo
-    const months = [ymOf(prevClose), ymOf(close)];
+    const close = dateIn(closeYM, F), prevClose = dateIn(addMonths(closeYM, -1), F), venc = faturaVenc(closeYM, F, V);
+    const doCiclo = t => t.fatura ? Math.abs(daysBetween(t.fatura, venc)) <= 5 : (t.date >= prevClose && t.date < close);
+    const itens = (st.tx || []).filter(t => t.source === "cartao" && t.kind === "gasto" && doCiclo(t));
+    const compras = r2(-sum(itens.filter(t => t.amount < 0), t => t.amount));
+    const estornos = r2(sum(itens.filter(t => t.amount > 0), t => t.amount));
+    const real = r2(compras - estornos);
     let prev = 0; const prevList = [];
-    for (const m of [...new Set(months)]) for (const o of reconcile(st, m, today).occ) if (o.forma === "cartao" && o.status !== "lancado" && o.date > prevClose && o.date <= close) { prev += o.valor; prevList.push(o); }
-    const pago = (st.tx || []).some(t => t.kind === "interna" && /fatura/i.test(t.cat + " " + t.merchant) && t.date > close && t.date <= addDays(venc, 3));
-    return { close, prevClose, venc, real, previsto: r2(prev), prevList, total: r2(real + prev), pago, aberto: today <= close };
+    for (const m of [...new Set([ymOf(prevClose), ymOf(close)])]) for (const o of reconcile(st, m, today).occ) if (o.forma === "cartao" && o.status !== "lancado" && o.date >= prevClose && o.date < close) { prev += o.valor; prevList.push(o); }
+    const pago = (st.tx || []).some(t => t.kind === "interna" && t.source === "conta" && /fatura/i.test(t.cat + " " + t.merchant + " " + t.memo) && t.date >= addDays(close, -1) && t.date <= addDays(venc, 3))
+      || (st.tx || []).some(t => t.kind === "interna" && t.source === "cartao" && /pagamento recebido/i.test(t.memo || "") && t.date >= close && t.date <= addDays(venc, 3));
+    return { close, prevClose, venc, compras, estornos, real, previsto: r2(prev), prevList, total: r2(real + prev), pago, aberto: today < close, itens: itens.length, importada: itens.some(t => t.fatura) };
   };
   const ym = ymOf(today);
-  const c0 = dateIn(ym, F) >= today ? ym : addMonths(ym, 1); // ciclo aberto fecha em c0
-  return { anterior: ciclo(addMonths(c0, -1)), atual: ciclo(c0), proximo: ciclo(addMonths(c0, 1)) };
+  const c0 = dateIn(ym, F) > today ? ym : addMonths(ym, 1); // fatura aberta fecha em c0
+  return { anterior: ciclo(addMonths(c0, -1)), atual: ciclo(c0), proximo: ciclo(addMonths(c0, 1)), F, V };
+}
+
+// ---------- caixinhas: saldo acompanhado pelo extrato ----------
+// Parte do último valor informado e soma o que entrou/saiu das caixinhas DEPOIS dessa data.
+// Aplicação RDB (saída da conta, valor negativo) aumenta a caixinha; Resgate RDB diminui.
+// Rendimento das caixinhas não aparece no extrato: o valor real tende a ser um pouco maior.
+function caixinhasSaldo(st, today) {
+  const b = perfilOf(st).caixinhasLivres; if (!b) return null;
+  const movs = (st.tx || []).filter(t => t.kind === "caixinha" && t.date > b.data && t.date <= (today || "9999"));
+  const mov = r2(-sum(movs, t => t.amount));
+  const ap = r2(-sum(movs.filter(t => t.amount < 0), t => t.amount)), rs = r2(sum(movs.filter(t => t.amount > 0), t => t.amount));
+  const ultimaExtrato = (st.tx || []).filter(t => t.source === "conta").map(t => t.date).sort().pop() || null;
+  const valor = r2(+b.valor + mov);
+  return { valor, base: +b.valor, baseData: b.data, mov, aplicado: ap, resgatado: rs, n: movs.length, ultimaExtrato, negativo: valor < -0.004, desatualizado: ultimaExtrato && ultimaExtrato < b.data ? false : null };
 }
 
 // ---------- dinheiro realmente disponível (R6, R7) ----------
@@ -1078,7 +1115,7 @@ function disponivel(st, today) {
   if (!p.saldoConta) falta.push("saldo em conta");
   if (!p.salario) falta.push("salário e dia de recebimento");
   const saldo = p.saldoConta ? +p.saldoConta.valor : null;
-  const cx = p.caixinhasLivres ? +p.caixinhasLivres.valor : 0;
+  const cxs = caixinhasSaldo(st, today), cx = cxs ? Math.max(0, cxs.valor) : 0;
   const prox = proximoSalario(st, today);
   const ate = prox || dateIn(ymOf(today), daysInYM(ymOf(today)));
   // contas e débitos que vencem antes do próximo salário (fora do cartão)
@@ -1256,7 +1293,7 @@ function simGuardarAteFimAno(st, today) {
   return { meses: pr.meses.map(m => m.m), plan: r2(plan + atual), realista: r2(realista + atual), atual: r2(atual), base: pr.media.base };
 }
 
-if (typeof module !== "undefined") module.exports = { isSalaryTx, salarioInfo, salarioRecebidoMes, sugestoes, BUCKETS, DEFAULT_GROUP, FREQ, perfilOf, groupOf, subOcc, parcOcc, fixaOcc, occurrences, reconcile, realizado, rendaPlan, rendaReal, compromissos, plano, faturaCiclos, disponivel, projecao, parcelaResumo, oportunidades, recomendacoes, simInvestirMais, simCancelar, simNovaParcela, simGuardarAteFimAno, assinaturasMensalEquiv, addMonths, monthsBetween, dateIn, mediaVariavel, proximoSalario, salarioRecebido, parcelaValor, parcelaNum };
+if (typeof module !== "undefined") module.exports = { faturaDaData, caixinhasSaldo, isSalaryTx, salarioInfo, salarioRecebidoMes, sugestoes, BUCKETS, DEFAULT_GROUP, FREQ, perfilOf, groupOf, subOcc, parcOcc, fixaOcc, occurrences, reconcile, realizado, rendaPlan, rendaReal, compromissos, plano, faturaCiclos, disponivel, projecao, parcelaResumo, oportunidades, recomendacoes, simInvestirMais, simCancelar, simNovaParcela, simGuardarAteFimAno, assinaturasMensalEquiv, addMonths, monthsBetween, dateIn, mediaVariavel, proximoSalario, salarioRecebido, parcelaValor, parcelaNum };
 
 // ===== Assistente financeiro: telas Início, Contas, Plano e Renda e saldos =====
 const TODAY = () => todayKey();
@@ -1747,6 +1784,20 @@ function renderDicas(T) {
     <span class="hint">As recomendações usam só o que você cadastrou e importou. Valores futuros são estimativas, não garantias.</span></div>`;
 }
 
+function faturasHtml(fc) {
+  const T = TODAY();
+  const one = (f, nome) => {
+    const st = f.pago ? ["paga", "ok"] : T < f.close ? ["aberta", "info"] : T <= f.venc ? ["fechada · a pagar", "warn"] : ["vencida", "over"];
+    return `<div class="fat"><div class="fh"><span><b>${nome}</b> · vence ${dCurta(f.venc)}</span>${chip(st[0], st[1])}</div>
+      <div class="rows"><span>${f.importada ? "Compras da fatura importada" : `Compras (${dCurta(f.prevClose)} a ${dCurta(addDays(f.close, -1))})`}</span><span>${fmt(f.compras)}</span>
+      ${f.estornos ? `<span>− Estornos e créditos</span><span>${fmt(f.estornos)}</span>` : ""}
+      ${f.previsto ? `<span>+ Previsto (assinaturas e parcelas ainda não lançadas)</span><span>${fmt(f.previsto)}</span>` : ""}
+      <span><b>Total</b></span><span><b>${fmt(f.total)}</b></span></div></div>`;
+  };
+  return `<div class="fats">${[[fc.anterior, "Anterior"], [fc.atual, "Atual"], [fc.proximo, "Próxima"]].filter(([f], i) => i === 1 || f.total || f.itens).map(([f, n]) => one(f, n)).join("")}</div>
+    <span class="hint">Faturas importadas em CSV usam o vencimento do arquivo (Nubank_AAAA-MM-DD.csv), como no app do banco.</span>`;
+}
+
 // ---------------- RENDA E SALDOS ----------------
 function renderPerfil() {
   const st = state, p = perfilOf(st), T = TODAY(), sg = sugestoes(st);
@@ -1761,11 +1812,13 @@ function renderPerfil() {
     <button class="btn ghost small" id="addExtra" style="align-self:flex-start">+ Renda extra</button></div>
   <div class="card"><div class="card-head"><h2>Saldos de hoje</h2><span class="hint">base do dinheiro disponível</span></div>
     <div class="ilist">${row("Saldo em conta", p.saldoConta ? fmt(p.saldoConta.valor) : null, p.saldoConta ? `${p.saldoConta.fonte === "extrato" ? "do extrato" : "informado"} em ${dCurta(p.saldoConta.data)}` : "dinheiro livre na conta, sem as caixinhas", "eSaldo")}
-    ${row("Caixinhas que posso usar", p.caixinhasLivres ? fmt(p.caixinhasLivres.valor) : null, "dinheiro separado, mas disponível para o mês", "eCx", "Nenhuma")}
+    ${(() => { const c = caixinhasSaldo(st, T); return row("Caixinhas que posso usar", c ? fmt(c.valor) : null, c ? `${fmt(c.base)} em ${dCurta(c.baseData)}${c.n ? ` ${c.mov >= 0 ? "+" : "−"} ${fmt(Math.abs(c.mov)).replace("R$ ", "R$ ")} em ${c.n} movimentaç${c.n === 1 ? "ão" : "ões"} depois` : " · sem movimentações depois"} · atualiza sozinho pelo extrato` : "informe uma vez: depois o extrato atualiza", "eCx", "Informar"); })()}
     ${row("Reserva de emergência", p.reserva ? fmt(p.reserva.valor) : null, p.reserva ? `meta de ${p.metaReservaMeses} meses de custo essencial` : "quanto já tem guardado para imprevistos", "eRes")}</div>
-    <span class="hint">Ao importar um extrato OFX da conta, o saldo é atualizado sozinho.</span></div>
+    ${(() => { const c = caixinhasSaldo(st, T); return c && c.negativo ? `<div class="alert warn"><span class="ic">!</span><div>O saldo calculado das caixinhas ficou negativo (${fmt(c.valor)}). Provavelmente faltou importar algum extrato ou o valor informado estava desatualizado. Informe o valor atual de novo.</div></div>` : ""; })()}
+    <span class="hint">Ao importar o extrato da conta (PDF ou OFX), o saldo da conta e o das caixinhas são atualizados sozinhos.</span></div>
   <div class="card"><div class="card-head"><h2>Cartão de crédito</h2></div>
-    <div class="ilist">${row(p.cartao ? esc(p.cartao.nome) : "Cartão", p.cartao ? `fecha ${p.cartao.fechamento} · vence ${p.cartao.vencimento}` : null, p.cartao ? (fc ? `fatura aberta: ${fmt(fc.atual.total)} (fecha ${dCurta(fc.atual.close)}, vence ${dCurta(fc.atual.venc)})` : "") : "dias de fechamento e vencimento da fatura", "eCard")}</div>
+    <div class="ilist">${row(p.cartao ? esc(p.cartao.nome) : "Cartão", p.cartao ? `fecha ${p.cartao.fechamento} · vence ${p.cartao.vencimento}` : null, p.cartao ? `compras a partir do dia ${p.cartao.fechamento} vão para a fatura seguinte` : "dias de fechamento e vencimento da fatura", "eCard")}</div>
+    ${fc ? faturasHtml(fc) : ""}
     ${p.cartao?.limite ? `<span class="label">Limite usado</span>${bar(usado, p.cartao.limite, "var(--cred)")}<span class="hint">${fmt(usado)} de ${fmt(p.cartao.limite)} · limite não é dinheiro e não entra no disponível.</span>` : ""}</div>
   <div class="card"><div class="card-head"><h2>Grupos das categorias</h2><span class="hint">para o plano</span></div>
     <span class="hint">Diga se cada categoria é essencial ou pessoal. Assinaturas e parcelas cadastradas vão sempre para os grupos próprios.</span>
@@ -1775,7 +1828,7 @@ function renderPerfil() {
   $("addExtra").onclick = () => editExtra();
   for (const b of document.querySelectorAll("[data-extra]")) b.onclick = () => editExtra((state.perfil.extras || []).find(x => x.id === b.dataset.extra));
   $("eSaldo").onclick = () => editSaldo("saldoConta", "Saldo em conta", "Quanto tem livre na conta hoje, sem contar caixinhas e investimentos.");
-  $("eCx").onclick = () => editSaldo("caixinhasLivres", "Caixinhas que posso usar", "Só o que você aceita usar nas despesas do mês. Não inclua a reserva de emergência.");
+  $("eCx").onclick = () => editSaldo("caixinhasLivres", "Caixinhas que posso usar", "Informe o total das caixinhas no fim do dia escolhido. Depois disso, o app soma as aplicações e desconta os resgates que vierem nos extratos importados, sem você precisar informar de novo. O rendimento não aparece no extrato, então vale corrigir o valor de vez em quando.");
   $("eRes").onclick = () => editSaldo("reserva", "Reserva de emergência", "Quanto já tem guardado só para imprevistos (pode estar numa caixinha ou CDB de liquidez diária).");
   $("eCard").onclick = editCartao;
   for (const s of document.querySelectorAll("[data-grp]")) s.onchange = () => { const g = { ...(state.perfil?.grupos || {}) }; g[s.dataset.grp] = s.value; setPerfil({ grupos: g }); persist(); toast("Grupo atualizado"); };
@@ -2065,7 +2118,9 @@ function renderCarteira() {
 
   const cx = m ? txOf(m).filter(t => t.kind === "caixinha") : [];
   const ap = -cx.filter(t => t.amount < 0).reduce((a, t) => a + t.amount, 0), rs = cx.filter(t => t.amount > 0).reduce((a, t) => a + t.amount, 0);
+  const cxs = caixinhasSaldo(state, todayKey());
   $("cardCaixinhas").innerHTML = `<div class="card-head"><h2>Caixinhas</h2><span class="hint">dinheiro separado, não conta como gasto nem investimento</span></div>
+    ${cxs ? `<div class="sumline"><span class="num big2">${fmt(cxs.valor)}</span><span class="hint">saldo estimado hoje · ${fmt(cxs.base)} em ${new Date(cxs.baseData + "T12:00").toLocaleDateString("pt-BR")}${cxs.n ? `, ${cxs.mov >= 0 ? "+" : "−"} ${fmt(Math.abs(cxs.mov))} depois (guardou ${fmt(cxs.aplicado)}, tirou ${fmt(cxs.resgatado)})` : ""}</span></div>` : `<div class="hint">Informe uma vez quanto tem nas caixinhas (Mais → Renda e saldos). Depois o extrato mantém o valor em dia.</div>`}
     <div class="facts"><div class="fact"><span class="label">Guardou</span><span class="v">${fmt(ap)}</span><span class="s">${cx.filter(t => t.amount < 0).length} aplicações</span></div>
     <div class="fact"><span class="label">Tirou</span><span class="v">${fmt(rs)}</span><span class="s">${cx.filter(t => t.amount > 0).length} resgates</span></div>
     <div class="fact"><span class="label">Saldo do mês</span><span class="v">${ap - rs >= 0 ? "+" : ""}${fmt(ap - rs)}</span><span class="s">${ap - rs >= 0 ? "ficou mais nas caixinhas" : "saiu mais do que entrou"}</span></div>
@@ -2283,7 +2338,11 @@ async function handleFiles(files, kind) {
     let fn = 0, fr = 0;
     for (const r of rows) {
       if (!r.id) r.id = "m-" + mkey(r.date + r.memo + r.amount);
-      if (have.has(r.id)) { repetidas++; fr++; continue; }
+      if (have.has(r.id)) {
+        const ex = state.tx.find(t => t.id === r.id);
+        if (ex && r.fatura && ex.fatura !== r.fatura) { ex.fatura = r.fatura; markTx([ex]); }
+        repetidas++; fr++; continue;
+      }
       if (r.source === "conta") { const k = txSig(r), n = sigs.get(k) || 0; if (n > 0) { sigs.set(k, n - 1); repetidas++; fr++; continue; } }
       const nt = { ...r, ...classify(r, state.rules, state.settings), manual: false };
       state.tx.push(nt); markTx([nt]); have.add(r.id); novas++; fn++;
