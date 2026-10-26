@@ -1,0 +1,578 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Caderno de Gastos</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Gastos">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#F3F5F2" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111714" media="(prefers-color-scheme: dark)">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" type="image/png" href="icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: uma coluna estreita como um caderno de bolso — resumo do mês, para onde foi, carteira, movimentações. */
+:root {
+  --bg: #F3F5F2; --surface: #FFFFFF; --ink: #16201B; --muted: #5E6B64; --line: #DCE2DD;
+  --accent: #0E6B4F; --accent-soft: #DCEFE6;
+  --in: #0E7A4F; --out: #A23B2A; --warn: #B7791F; --neutral: #5B6B8C; --inv: #6B4FA0; --cred: #B4521E;
+  --display: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+  --body: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #111714; --surface: #18201C; --ink: #E8EEEA; --muted: #95A39B; --line: #2A3530;
+  --accent: #4FC79A; --accent-soft: #1D3A2E;
+  --in: #5CCB98; --out: #EE8A75; --warn: #E3B05A; --neutral: #9BAED6; --inv: #B9A1E6; --cred: #F0A06B; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #111714; --surface: #18201C; --ink: #E8EEEA; --muted: #95A39B; --line: #2A3530;
+  --accent: #4FC79A; --accent-soft: #1D3A2E;
+  --in: #5CCB98; --out: #EE8A75; --warn: #E3B05A; --neutral: #9BAED6; --inv: #B9A1E6; --cred: #F0A06B; color-scheme: dark }
+* { box-sizing: border-box }
+body { background: var(--bg); color: var(--ink); font-family: var(--body); font-size: 15px; line-height: 1.45;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 20px 60px }
+.wrap { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 28px }
+.num { font-family: var(--mono); font-variant-numeric: tabular-nums }
+h1, h2 { font-family: var(--display); margin: 0; text-wrap: balance }
+h1 { font-size: 1.6rem; font-weight: 700; letter-spacing: -0.01em }
+h2 { font-size: 1.1rem; font-weight: 700 }
+.label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 600 }
+button { font: inherit; color: inherit; cursor: pointer }
+button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
+
+header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap }
+.month { display: flex; align-items: center; gap: 4px }
+.month button { background: none; border: 1px solid var(--line); width: 36px; height: 36px; border-radius: 50%; font-size: 1.1rem }
+.month button:disabled { opacity: .35; cursor: default }
+.month h1 { min-width: 9.5ch; text-align: center; text-transform: capitalize }
+.btn { background: var(--accent); color: var(--bg); border: 0; border-radius: 999px; padding: 9px 16px; font-weight: 600; font-size: .9rem }
+.btn.ghost { background: transparent; color: var(--accent); border: 1px solid var(--accent) }
+
+.status { font-size: .85rem; color: var(--muted); background: var(--surface); border: 1px dashed var(--line); padding: 10px 12px; border-radius: 10px }
+
+.summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 14px; overflow: hidden }
+.summary > div { background: var(--surface); padding: 14px; display: flex; flex-direction: column; gap: 4px; min-width: 0 }
+.summary .v { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 1.15rem; font-weight: 500; white-space: nowrap }
+.summary .sub { font-size: .78rem; color: var(--muted) }
+.foot { font-size: .85rem; color: var(--muted); margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px 16px }
+.foot b { color: var(--ink); font-weight: 500 }
+@media (max-width: 480px) { .summary { grid-template-columns: 1fr 1fr } .summary > div:first-child { grid-column: 1 / -1 } }
+
+section { display: flex; flex-direction: column; gap: 12px }
+.sechead { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap }
+
+.cats { display: flex; flex-direction: column }
+.cat { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; padding: 10px 2px; border: 0; border-bottom: 1px solid var(--line); background: none; text-align: left; width: 100% }
+.cat:last-child { border-bottom: 0 }
+.cat .n { font-weight: 500 }
+.cat .amt { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right }
+.bar { grid-column: 1 / -1; height: 6px; background: var(--line); border-radius: 3px; overflow: hidden }
+.bar i { display: block; height: 100%; background: var(--accent); border-radius: 3px }
+.bar i.warn { background: var(--warn) } .bar i.over { background: var(--out) }
+.cat .meta { grid-column: 1 / -1; font-size: .78rem; color: var(--muted) }
+.cat .meta.over { color: var(--out); font-weight: 500 }
+
+.wallet { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 16px; display: flex; flex-direction: column; gap: 10px }
+.wallet .big { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 1.5rem; font-weight: 500 }
+.wallet .rows { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; font-size: .88rem }
+.wallet .rows span:nth-child(even) { font-family: var(--mono); text-align: right }
+
+.chips { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: none }
+.chip { border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 6px 12px; font-size: .82rem; white-space: nowrap }
+.chip[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink) }
+
+.day { display: flex; flex-direction: column }
+.day .d { font-size: .75rem; color: var(--muted); padding: 10px 2px 4px; text-transform: capitalize; font-weight: 600 }
+.tx { display: grid; grid-template-columns: 10px 1fr auto; align-items: center; gap: 10px; padding: 10px 2px; border: 0; border-bottom: 1px solid var(--line); background: none; text-align: left; width: 100% }
+.tx .dot { width: 8px; height: 8px; border-radius: 50% }
+.tx .t { min-width: 0 }
+.tx .m { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.tx .c { font-size: .78rem; color: var(--muted) }
+.tx .a { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap }
+.k-gasto { --k: var(--out) } .k-entrada { --k: var(--in) } .k-caixinha { --k: var(--neutral) } .k-investimento { --k: var(--inv) } .k-interna { --k: var(--muted) }
+.tx .dot { background: var(--k) }
+.tx.k-caixinha .a, .tx.k-interna .a { color: var(--muted) }
+.tx.k-entrada .a { color: var(--in) }
+.tx.k-investimento .a { color: var(--inv) }
+.empty { color: var(--muted); padding: 18px 2px; font-size: .9rem }
+
+.sheet-bg { position: fixed; inset: 0; background: rgb(0 0 0 / .35); z-index: 20; display: flex; align-items: flex-end; justify-content: center }
+.sheet { background: var(--surface); width: 100%; max-width: 560px; border-radius: 18px 18px 0 0; padding: 20px max(18px, env(safe-area-inset-left, 0px)) calc(20px + env(safe-area-inset-bottom, 0px)); display: flex; flex-direction: column; gap: 14px; max-height: 88vh; overflow-y: auto }
+.sheet .memo { font-size: .8rem; color: var(--muted); word-break: break-word }
+.seg { display: flex; flex-wrap: wrap; gap: 6px }
+.seg button { border: 1px solid var(--line); background: var(--bg); border-radius: 999px; padding: 7px 12px; font-size: .85rem }
+.seg button[aria-pressed="true"] { background: var(--k, var(--accent)); color: var(--surface); border-color: transparent }
+select, input[type=number], input[type=text] { width: 100%; font: inherit; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink) }
+.check { display: flex; gap: 8px; align-items: center; font-size: .9rem }
+.row { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap }
+.hint { font-size: .8rem; color: var(--muted) }
+.toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(20px + env(safe-area-inset-bottom, 0px)); background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 999px; font-size: .88rem; z-index: 30; max-width: calc(100% - 32px) }
+@media (prefers-reduced-motion: no-preference) { .bar i { transition: width .4s ease } }
+</style>
+
+<style>
+html { -webkit-text-size-adjust: 100% }
+body { padding-top: calc(16px + env(safe-area-inset-top, 0px)); padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px)); -webkit-tap-highlight-color: transparent }
+.split { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: var(--line); margin-top: 4px }
+.split i { display: block; height: 100% }
+.split .deb { background: var(--accent) } .split .cred { background: var(--cred) }
+.legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: .78rem; color: var(--muted) }
+.legend span::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; vertical-align: 0; background: var(--c) }
+.badge { display: inline-block; font-size: .68rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--cred); border: 1px solid currentColor; border-radius: 4px; padding: 0 4px; margin-left: 4px; vertical-align: 1px }
+.menu { display: flex; flex-direction: column; gap: 8px }
+.menu button { text-align: left; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px }
+.menu button small { display: block; color: var(--muted); font-size: .8rem }
+.iconbtn { background: none; border: 1px solid var(--line); width: 38px; height: 38px; border-radius: 50%; font-size: 1.1rem; line-height: 1 }
+.danger { color: var(--out) !important }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="month">
+      <button id="prev" aria-label="Mês anterior">‹</button>
+      <h1 id="mtitle">—</h1>
+      <button id="next" aria-label="Próximo mês">›</button>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <label class="btn" for="file" style="cursor:pointer">Importar</label>
+      <input id="file" type="file" accept=".ofx,.csv,.json,text/csv,application/json" multiple hidden>
+      <button class="iconbtn" id="menuBtn" aria-label="Mais opções">⋯</button>
+    </div>
+  </header>
+
+  <div id="status" class="status" hidden></div>
+
+  <div>
+    <div class="summary">
+      <div><span class="label">Gastos do mês</span><span class="v" id="sGasto">—</span>
+        <div class="split" id="sSplit"></div>
+        <div class="legend" id="sLegend"></div></div>
+      <div><span class="label">Entradas</span><span class="v" id="sEntrada">—</span><span class="sub" id="sEntradaSub"></span></div>
+      <div><span class="label">Investido</span><span class="v" id="sInv">—</span><span class="sub">na carteira</span></div>
+    </div>
+    <div class="foot" id="foot"></div>
+  </div>
+
+  <section>
+    <div class="sechead"><h2>Para onde foi</h2><span class="hint">Toque numa categoria para definir um limite</span></div>
+    <div class="chips" id="pchips"></div>
+    <div class="cats" id="cats"></div>
+  </section>
+
+  <section>
+    <div class="sechead"><h2>Carteira de investimentos</h2><button class="btn ghost" id="walletBtn">Atualizar saldo</button></div>
+    <div class="wallet" id="wallet"></div>
+  </section>
+
+  <section>
+    <div class="sechead"><h2>Movimentações</h2><span class="hint">Toque para corrigir a classificação</span></div>
+    <div class="chips" id="chips"></div>
+    <div id="list"></div>
+  </section>
+</div>
+<div id="sheetHost"></div>
+<script>
+// ===== Núcleo: leitura de extratos e classificação =====
+const KINDS = {
+  gasto: { label: "Gasto", short: "Gasto" },
+  entrada: { label: "Entrada", short: "Entrada" },
+  caixinha: { label: "Caixinha", short: "Caixinha" },
+  investimento: { label: "Investimento", short: "Investimento" },
+  interna: { label: "Entre contas", short: "Entre contas" }
+};
+const CATS_GASTO = ["Alimentação", "Bares e saídas", "Conveniência e mercado", "Transporte", "Esporte e lazer", "Compras online", "Apps e assinaturas", "Pix para pessoas", "Casa e contas", "Saúde", "Educação", "Outros gastos"];
+const CATS_ENTRADA = ["Salário", "Pix recebido", "Reembolso", "Outras entradas"];
+
+function norm(s) {
+  return String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9]+/g, " ").trim();
+}
+function mkey(s) { return norm(s).replace(/ /g, "").slice(0, 60) || "x"; }
+function titleCase(s) {
+  return String(s).toLowerCase().replace(/(^|[\s\-\/(])([a-zà-ú])/g, (m, a, b) => a + b.toUpperCase());
+}
+
+function extractMerchant(memo) {
+  const m = String(memo).trim();
+  let r;
+  if ((r = m.match(/^Compra no d[ée]bito(?: via NuPay)? - (.+)$/i))) return r[1].trim();
+  if ((r = m.match(/^Transfer[êe]ncia (?:enviada|recebida)(?: pelo Pix)? - ([^-]+?) - /i))) return r[1].trim();
+  if ((r = m.match(/^Transfer[êe]ncia (?:enviada|recebida)(?: pelo Pix)? - (.+)$/i))) return r[1].trim();
+  if ((r = m.match(/^(?:Aplica[çc][ãa]o|Resgate) RDB/i))) return "Caixinha";
+  if ((r = m.match(/^(?:Aplica[çc][ãa]o|Resgate) (.+)$/i))) return r[1].replace(/\s*-\s*/g, " ").trim();
+  if ((r = m.match(/^Pagamento de boleto efetuado - (.+)$/i))) return r[1].trim();
+  return m.split(" - ")[0].trim();
+}
+
+const KEYWORDS = [
+  [/sushi|churrasc|restau|lanch|acai|granlu|ifood|pizza|burger|padaria|lanchonete|cafe|food|esfiha|pastel|aspen/, "Alimentação"],
+  [/\bbar\b|poco loco|dinamite|chopp|pub\b|boteco|adega/, "Bares e saídas"],
+  [/conveniencia|oxxo|est comercial|\bmercado\b|minimercado|supermerc|carrefour|pao de acucar|atacad|assai|hortifruti/, "Conveniência e mercado"],
+  [/\bvlt\b|uber|\b99\b|onibus|metro|posto|combust|estaciona|sem parar|veloe|emtu/, "Transporte"],
+  [/sport|academia|smart ?fit|cinema|ingresso|teatro/, "Esporte e lazer"],
+  [/bytedance|netflix|spotify|apple|google|prime video|disney|hbo|youtube|icloud|chatgpt|openai|anthropic|claude/, "Apps e assinaturas"],
+  [/appmax|aspen|jim com|mercadolivre|mercado livre|shopee|amazon|magalu|aliexpress|shein|kabum|pagseguro|paypal/, "Compras online"],
+  [/farmacia|drogaria|droga|raia|pacheco|drogal|clinica|hospital|laborat/, "Saúde"],
+  [/puc|faculdade|livraria|curso|udemy|alura/, "Educação"],
+  [/cpfl|sanasa|vivo|claro|tim\b|net\b|aluguel|condominio|energia|agua/, "Casa e contas"]
+];
+
+// rules: { [merchantKey]: {kind, cat} }   settings: { ownNames: [..] }
+function classify(row, rules, settings) {
+  const memo = row.memo || "";
+  const nm = norm(memo);
+  const merchant = row.source === "cartao" ? String(row.memo).replace(/\s*-\s*parcela\s*\d+\/\d+\s*$/i, "") : extractMerchant(memo);
+  const key = mkey(merchant);
+  const base = { merchant: titleCase(merchant), key };
+  if (/^(aplicacao|resgate) rdb/.test(nm)) return { ...base, merchant: "Caixinha", key: "caixinha", kind: "caixinha", cat: "Caixinha" };
+  if (/^(aplicacao|resgate) /.test(nm)) return { ...base, kind: "investimento", cat: "Carteira" };
+  if (rules && rules[key]) return { ...base, kind: rules[key].kind, cat: rules[key].cat };
+  if (/pagamento (de|da) fatura|pagamento recebido/.test(nm)) return { ...base, merchant: "Fatura do cartão", kind: "interna", cat: "Fatura do cartão" };
+  const own = ((settings && settings.ownNames) || []).map(norm);
+  if (own.includes(norm(merchant))) return { ...base, kind: "interna", cat: "Entre minhas contas" };
+  const isPix = /pix/.test(nm);
+  const isPerson = /•••|\*\*\*/.test(memo) && !/\/\d{4}-\d{2}/.test(memo);
+  const mn = norm(merchant);
+  if (row.amount > 0 && row.source !== "cartao") return { ...base, kind: "entrada", cat: isPix ? "Pix recebido" : "Outras entradas" };
+  // no cartão, valor positivo é estorno/crédito: fica como gasto positivo e abate da categoria
+  for (const [re, cat] of KEYWORDS) if (re.test(mn)) return { ...base, kind: "gasto", cat };
+  if (row.source === "cartao") return { ...base, kind: "gasto", cat: "Outros gastos" };
+  if (isPix && isPerson) return { ...base, kind: "gasto", cat: "Pix para pessoas" };
+  return { ...base, kind: "gasto", cat: "Outros gastos" };
+}
+
+function parseOFX(text) {
+  const out = [];
+  const blocks = text.split(/<STMTTRN>/i).slice(1);
+  const tag = (b, t) => { const r = b.match(new RegExp("<" + t + ">([^<\\r\\n]*)", "i")); return r ? r[1].trim() : ""; };
+  const isCard = /<CCSTMTRS>/i.test(text);
+  for (const b of blocks) {
+    const d = tag(b, "DTPOSTED");
+    const amt = parseFloat(tag(b, "TRNAMT").replace(",", "."));
+    if (!d || isNaN(amt)) continue;
+    out.push({
+      id: tag(b, "FITID") || null,
+      date: d.slice(0, 4) + "-" + d.slice(4, 6) + "-" + d.slice(6, 8),
+      amount: amt,
+      memo: tag(b, "MEMO") || tag(b, "NAME"),
+      source: isCard ? "cartao" : "conta"
+    });
+  }
+  return out;
+}
+
+function csvRows(text) {
+  const rows = []; let row = [], cur = "", q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) { if (c === '"') { if (text[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += c; }
+    else if (c === '"') q = true;
+    else if (c === ",") { row.push(cur); cur = ""; }
+    else if (c === "\n" || c === "\r") { if (c === "\r" && text[i + 1] === "\n") i++; row.push(cur); rows.push(row); row = []; cur = ""; }
+    else cur += c;
+  }
+  if (cur !== "" || row.length) { row.push(cur); rows.push(row); }
+  return rows.filter(r => r.some(x => x.trim() !== ""));
+}
+
+function parseCSV(text) {
+  const rows = csvRows(text.replace(/^﻿/, ""));
+  if (!rows.length) return [];
+  const h = rows[0].map(norm);
+  const out = [];
+  if (h.includes("identificador")) { // extrato da conta: Data,Valor,Identificador,Descrição
+    const iD = h.indexOf("data"), iV = h.indexOf("valor"), iI = h.indexOf("identificador"), iM = h.findIndex(x => x.startsWith("descri"));
+    for (const r of rows.slice(1)) {
+      const [dd, mm, yy] = (r[iD] || "").split("/");
+      const amt = parseFloat(String(r[iV]).replace(",", "."));
+      if (!yy || isNaN(amt)) continue;
+      out.push({ id: r[iI], date: `${yy}-${mm}-${dd}`, amount: amt, memo: r[iM], source: "conta" });
+    }
+  } else if (h.includes("title") && h.includes("amount")) { // fatura do cartão: date,title,amount
+    const iD = h.indexOf("date"), iT = h.indexOf("title"), iA = h.indexOf("amount");
+    const seen = {};
+    for (const r of rows.slice(1)) {
+      const amt = parseFloat(String(r[iA]).replace(",", "."));
+      if (!r[iD] || isNaN(amt)) continue;
+      const base = "c-" + mkey(r[iD] + r[iT] + amt).slice(0, 80);
+      seen[base] = (seen[base] || 0) + 1;
+      out.push({ id: base + "-" + seen[base], date: r[iD].slice(0, 10), amount: -amt, memo: r[iT], source: "cartao" });
+    }
+  }
+  return out;
+}
+
+function parseStatement(name, text) {
+  if (/\.ofx$/i.test(name) || /<OFX>/i.test(text)) return parseOFX(text);
+  return parseCSV(text);
+}
+
+if (typeof module !== "undefined") module.exports = { classify, parseStatement, mkey, norm, KINDS, CATS_GASTO, CATS_ENTRADA };
+
+</script>
+<script>
+const KCOLOR = { gasto: "k-gasto", entrada: "k-entrada", caixinha: "k-caixinha", investimento: "k-investimento", interna: "k-interna" };
+const fmt = v => (v < -0.004 ? "−" : "") + "R$ " + Math.abs(v).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const $ = id => document.getElementById(id);
+const KEY = "caderno-gastos-v1";
+
+const state = { tx: [], rules: {}, budgets: {}, settings: { ownNames: [] }, wallet: null, month: null, filter: "todos", pay: "tudo" };
+
+// ===== armazenamento no aparelho =====
+function load() {
+  try {
+    const d = JSON.parse(localStorage.getItem(KEY) || "null");
+    if (d) Object.assign(state, { tx: d.tx || [], rules: d.rules || {}, budgets: d.budgets || {}, settings: d.settings || { ownNames: [] }, wallet: d.wallet || null });
+  } catch (e) { showStatus("Não consegui ler os dados salvos neste aparelho."); }
+}
+function persist() {
+  try {
+    localStorage.setItem(KEY, JSON.stringify({ tx: state.tx, rules: state.rules, budgets: state.budgets, settings: state.settings, wallet: state.wallet }));
+  } catch (e) { toast("Não consegui salvar. O armazenamento do aparelho pode estar cheio."); }
+}
+function showStatus(msg) { $("status").textContent = msg; $("status").hidden = !msg; }
+
+// ===== cálculo =====
+const isCred = t => t.source === "cartao";
+function months() { return [...new Set(state.tx.map(t => t.date.slice(0, 7)))].sort(); }
+function monthName(m) { const [y, mo] = m.split("-"); return new Date(+y, +mo - 1, 1).toLocaleDateString("pt-BR", { month: "long", year: "numeric" }); }
+function payOk(t) { return state.pay === "tudo" || (state.pay === "credito" ? isCred(t) : !isCred(t)); }
+
+function render() {
+  const ms = months();
+  if (!state.month || !ms.includes(state.month)) state.month = ms[ms.length - 1] || null;
+  const i = ms.indexOf(state.month);
+  $("prev").disabled = i <= 0; $("next").disabled = i < 0 || i >= ms.length - 1;
+  $("mtitle").textContent = state.month ? monthName(state.month).replace(" de ", " ") : "Sem dados";
+  const tx = state.tx.filter(t => t.date.startsWith(state.month || "x"));
+  const sum = (k, f = () => true) => tx.filter(t => t.kind === k && f(t)).reduce((a, t) => a + t.amount, 0);
+  const gDeb = -sum("gasto", t => !isCred(t)), gCred = -sum("gasto", isCred);
+  const gasto = gDeb + gCred, entrada = sum("entrada"), inv = -sum("investimento"), cx = -sum("caixinha");
+  const cxMov = tx.filter(t => t.kind === "caixinha").length;
+  const hasCard = state.tx.some(isCred);
+
+  $("sGasto").textContent = fmt(gasto);
+  const tot = Math.max(gasto, 0.01);
+  $("sSplit").innerHTML = `<i class="deb" style="width:${(Math.max(gDeb, 0) / tot * 100).toFixed(1)}%"></i><i class="cred" style="width:${(Math.max(gCred, 0) / tot * 100).toFixed(1)}%"></i>`;
+  $("sLegend").innerHTML = `<span style="--c:var(--accent)">Débito e Pix <b class="num">${fmt(gDeb)}</b></span><span style="--c:var(--cred)">Crédito <b class="num">${hasCard ? fmt(gCred) : "não importado"}</b></span>`;
+  $("sEntrada").textContent = fmt(entrada);
+  $("sEntradaSub").textContent = "sobra " + fmt(entrada - gasto - inv);
+  $("sInv").textContent = fmt(inv);
+  $("foot").innerHTML = `<span>Caixinhas: <b class="num">${cxMov}</b> movimentações, ${cx >= 0 ? "separou" : "tirou"} <b class="num">${fmt(Math.abs(cx))}</b></span><span>Caixinhas e pagamento de fatura não entram nos gastos.</span>`;
+
+  // categorias
+  const P = [["tudo", "Tudo"], ["debito", "Débito e Pix"], ["credito", "Crédito"]];
+  $("pchips").innerHTML = P.map(([k, l]) => `<button class="chip" data-p="${k}" aria-pressed="${state.pay === k}">${l}</button>`).join("");
+  const by = {}, byCred = {};
+  for (const t of tx.filter(t => t.kind === "gasto" && payOk(t))) { by[t.cat] = (by[t.cat] || 0) - t.amount; if (isCred(t)) byCred[t.cat] = (byCred[t.cat] || 0) - t.amount; }
+  const useBudget = state.pay === "tudo";
+  if (useBudget) for (const c of Object.keys(state.budgets)) if (state.budgets[c] > 0 && !(c in by)) by[c] = 0;
+  const cats = Object.entries(by).sort((a, b) => b[1] - a[1]);
+  const shownTotal = Math.max(cats.reduce((a, [, v]) => a + v, 0), 1);
+  const max = Math.max(1, ...cats.map(([c, v]) => Math.max(v, useBudget ? state.budgets[c] || 0 : 0)));
+  $("cats").innerHTML = cats.length ? cats.map(([c, v]) => {
+    const b = useBudget ? state.budgets[c] : 0;
+    const ratio = b ? v / b : 0;
+    const cls = b ? (ratio > 1 ? "over" : ratio > 0.8 ? "warn" : "") : "";
+    const w = b ? Math.min(100, ratio * 100) : (Math.max(v, 0) / max) * 100;
+    const credNote = state.pay === "tudo" && byCred[c] ? ` · ${fmt(byCred[c])} no crédito` : "";
+    const meta = b ? (ratio > 1 ? `Passou ${fmt(v - b)} do limite de ${fmt(b)}` : `${Math.round(ratio * 100)}% do limite de ${fmt(b)} · resta ${fmt(b - v)}`) + credNote
+      : `${Math.round(v / shownTotal * 100)}% dos gastos${credNote}`;
+    return `<button class="cat" data-cat="${esc(c)}"><span class="n">${esc(c)}</span><span class="amt">${fmt(v)}</span><span class="bar"><i class="${cls}" style="width:${w.toFixed(1)}%"></i></span><span class="meta ${ratio > 1 ? "over" : ""}">${meta}</span></button>`;
+  }).join("") : `<p class="empty">${state.pay === "credito" && !hasCard ? "Importe a fatura do cartão (CSV) para ver os gastos no crédito." : "Nenhum gasto aqui neste mês."}</p>`;
+
+  // carteira
+  const invAll = state.tx.filter(t => t.kind === "investimento");
+  const w = state.wallet;
+  const mlabel = state.month ? monthName(state.month).split(" ")[0] : "—";
+  if (w && w.saldo != null) {
+    const since = invAll.filter(t => t.date > w.data).reduce((a, t) => a - t.amount, 0);
+    $("wallet").innerHTML = `<span class="label">Estimativa hoje</span><span class="big">${fmt(w.saldo + since)}</span>
+      <div class="rows"><span>Saldo informado em ${new Date(w.data + "T12:00").toLocaleDateString("pt-BR")}</span><span>${fmt(w.saldo)}</span>
+      <span>Aportes e resgates depois disso</span><span>${since >= 0 ? "+" : ""}${fmt(since)}</span>
+      <span>Aportado em ${mlabel}</span><span>${fmt(inv)}</span></div>
+      <span class="hint">O rendimento não aparece no extrato. Atualize o saldo pela aba Investimentos do Nubank quando quiser acertar o valor.</span>`;
+  } else {
+    $("wallet").innerHTML = `<span class="label">Aportado em ${mlabel}</span><span class="big">${fmt(inv)}</span>
+      <span class="hint">Informe o saldo atual da aba Investimentos do Nubank. A partir dele, o app soma os aportes e resgates dos próximos extratos.</span>`;
+  }
+
+  // lista
+  const F = [["todos", "Todas"], ["gasto", "Gastos"], ["credito", "Crédito"], ["entrada", "Entradas"], ["caixinha", "Caixinhas"], ["investimento", "Investimentos"], ["interna", "Entre contas"]];
+  $("chips").innerHTML = F.map(([k, l]) => `<button class="chip" data-f="${k}" aria-pressed="${state.filter === k}">${l}</button>`).join("");
+  const shown = tx.filter(t => state.filter === "todos" || (state.filter === "credito" ? isCred(t) : t.kind === state.filter))
+    .sort((a, b) => b.date.localeCompare(a.date) || a.id.localeCompare(b.id));
+  const days = {};
+  for (const t of shown) (days[t.date] = days[t.date] || []).push(t);
+  $("list").innerHTML = shown.length ? Object.entries(days).map(([d, ts]) => `<div class="day"><div class="d">${new Date(d + "T12:00").toLocaleDateString("pt-BR", { weekday: "short", day: "numeric", month: "short" })}</div>${ts.map(t =>
+    `<button class="tx ${KCOLOR[t.kind]}" data-id="${esc(t.id)}"><span class="dot"></span><span class="t"><div class="m">${esc(t.merchant)}${isCred(t) ? '<span class="badge">crédito</span>' : ""}</div><div class="c">${esc(t.cat)} · ${KINDS[t.kind].label}</div></span><span class="a">${t.amount > 0 ? "+" : ""}${fmt(t.amount)}</span></button>`).join("")}</div>`).join("")
+    : `<p class="empty">${state.tx.length ? "Nada com esse filtro neste mês." : "Toque em Importar e escolha o extrato da conta (OFX ou CSV) ou a fatura do cartão (CSV) exportados pelo Nubank."}</p>`;
+}
+
+// ===== interações =====
+$("prev").onclick = () => { const ms = months(); state.month = ms[ms.indexOf(state.month) - 1]; render(); };
+$("next").onclick = () => { const ms = months(); state.month = ms[ms.indexOf(state.month) + 1]; render(); };
+$("chips").onclick = e => { const b = e.target.closest("[data-f]"); if (b) { state.filter = b.dataset.f; render(); } };
+$("pchips").onclick = e => { const b = e.target.closest("[data-p]"); if (b) { state.pay = b.dataset.p; render(); } };
+$("list").onclick = e => { const b = e.target.closest("[data-id]"); if (b) openTx(state.tx.find(t => t.id === b.dataset.id)); };
+$("cats").onclick = e => { const b = e.target.closest("[data-cat]"); if (b) openBudget(b.dataset.cat); };
+$("walletBtn").onclick = openWallet;
+$("menuBtn").onclick = openMenu;
+
+let toastT;
+function toast(msg) { let el = document.querySelector(".toast"); if (!el) { el = document.createElement("div"); el.className = "toast"; document.body.append(el); } el.textContent = msg; clearTimeout(toastT); toastT = setTimeout(() => el.remove(), 3400); }
+function sheet(html) {
+  $("sheetHost").innerHTML = `<div class="sheet-bg"><div class="sheet" role="dialog" aria-modal="true">${html}</div></div>`;
+  const bg = $("sheetHost").firstChild;
+  bg.onclick = e => { if (e.target === bg || e.target.closest("[data-close]")) close(); };
+  document.addEventListener("keydown", escClose);
+  return bg.querySelector(".sheet");
+}
+function escClose(e) { if (e.key === "Escape") close(); }
+function close() { $("sheetHost").innerHTML = ""; document.removeEventListener("keydown", escClose); }
+
+function catOptions(kind, cur) {
+  const list = kind === "gasto" ? CATS_GASTO : kind === "entrada" ? CATS_ENTRADA : kind === "caixinha" ? ["Caixinha"] : kind === "investimento" ? ["Carteira"] : ["Entre minhas contas", "Fatura do cartão"];
+  const all = list.includes(cur) || !cur ? list : [cur, ...list];
+  return all.map(c => `<option ${c === cur ? "selected" : ""}>${esc(c)}</option>`).join("");
+}
+
+function openTx(t) {
+  if (!t) return;
+  let kind = t.kind;
+  const s = sheet(`<div><span class="label">${new Date(t.date + "T12:00").toLocaleDateString("pt-BR")} · ${isCred(t) ? "cartão de crédito" : "conta"}</span><h2>${esc(t.merchant)}</h2></div>
+    <div class="num" style="font-size:1.3rem">${fmt(t.amount)}</div>
+    <div class="memo">${esc(t.memo)}</div>
+    <div><span class="label">Tipo</span><div class="seg" id="kseg">${Object.entries(KINDS).map(([k, v]) => `<button class="${KCOLOR[k]}" data-k="${k}" aria-pressed="${k === kind}">${v.label}</button>`).join("")}</div></div>
+    <div><label class="label" for="catSel">Categoria</label><select id="catSel">${catOptions(kind, t.cat)}</select></div>
+    ${t.key !== "caixinha" ? `<label class="check"><input type="checkbox" id="allChk" checked> Aplicar a tudo de “${esc(t.merchant)}”, agora e nas próximas importações</label>` : ""}
+    <div class="row"><button class="btn ghost" data-close>Cancelar</button><button class="btn" id="saveTx">Salvar</button></div>`);
+  s.querySelector("#kseg").onclick = e => {
+    const b = e.target.closest("[data-k]"); if (!b) return; kind = b.dataset.k;
+    s.querySelectorAll("#kseg button").forEach(x => x.setAttribute("aria-pressed", x.dataset.k === kind));
+    s.querySelector("#catSel").innerHTML = catOptions(kind, kind === t.kind ? t.cat : "");
+  };
+  s.querySelector("#saveTx").onclick = () => {
+    const cat = s.querySelector("#catSel").value;
+    const all = s.querySelector("#allChk")?.checked;
+    close();
+    const targets = all ? state.tx.filter(x => x.key === t.key) : [t];
+    if (all) state.rules[t.key] = { kind, cat };
+    for (const x of targets) { x.kind = kind; x.cat = cat; x.manual = true; }
+    persist(); render();
+    toast(targets.length > 1 ? `${targets.length} movimentações atualizadas` : "Classificação salva");
+  };
+}
+
+function openBudget(cat) {
+  const s = sheet(`<div><span class="label">Limite mensal</span><h2>${esc(cat)}</h2></div>
+    <input type="number" id="budIn" inputmode="decimal" min="0" step="10" placeholder="Ex.: 300" value="${state.budgets[cat] || ""}">
+    <span class="hint">Vale para débito, Pix e crédito somados. Deixe vazio para tirar o limite.</span>
+    <div class="row"><button class="btn ghost" data-close>Cancelar</button><button class="btn" id="saveBud">Salvar</button></div>`);
+  s.querySelector("#saveBud").onclick = () => {
+    const v = parseFloat(String(s.querySelector("#budIn").value).replace(",", "."));
+    if (v > 0) state.budgets[cat] = v; else delete state.budgets[cat];
+    close(); persist(); render();
+    toast(v > 0 ? "Limite salvo" : "Limite removido");
+  };
+}
+
+function openWallet() {
+  const today = new Date().toISOString().slice(0, 10);
+  const s = sheet(`<div><span class="label">Carteira</span><h2>Saldo atual dos investimentos</h2></div>
+    <span class="hint">Copie o valor total da aba Investimentos do Nubank. As caixinhas ficam de fora.</span>
+    <input type="number" id="wIn" inputmode="decimal" min="0" step="0.01" placeholder="Ex.: 1500,00" value="${state.wallet?.saldo ?? ""}">
+    <label class="label" for="wDate">Data do saldo</label><input type="date" id="wDate" value="${today}">
+    <div class="row"><button class="btn ghost" data-close>Cancelar</button><button class="btn" id="saveW">Salvar</button></div>`);
+  s.querySelector("#saveW").onclick = () => {
+    const v = parseFloat(String(s.querySelector("#wIn").value).replace(",", "."));
+    const d = s.querySelector("#wDate").value.trim();
+    if (isNaN(v) || !/^\d{4}-\d{2}-\d{2}$/.test(d)) { toast("Confira o valor e a data"); return; }
+    state.wallet = { saldo: v, data: d };
+    close(); persist(); render();
+    toast("Saldo da carteira atualizado");
+  };
+}
+
+function openMenu() {
+  const n = state.tx.length;
+  const s = sheet(`<div><span class="label">Caderno de Gastos</span><h2>Seus dados</h2></div>
+    <span class="hint">${n} movimentações guardadas só neste iPhone. Faça um backup de vez em quando: se o app for apagado, os dados vão junto.</span>
+    <div class="menu">
+      <button id="mExport">Fazer backup<small>Gera um arquivo para salvar no app Arquivos ou no iCloud</small></button>
+      <button id="mImport">Restaurar backup<small>Escolha um arquivo .json gerado por este app</small></button>
+      <button id="mReset" class="danger">Apagar todos os dados<small>Remove movimentações, regras, limites e carteira deste aparelho</small></button>
+    </div>
+    <div class="row"><button class="btn ghost" data-close>Fechar</button></div>`);
+  s.querySelector("#mExport").onclick = exportBackup;
+  s.querySelector("#mImport").onclick = () => { close(); $("file").click(); };
+  s.querySelector("#mReset").onclick = () => {
+    const s2 = sheet(`<h2>Apagar tudo?</h2><span class="hint">Isso não pode ser desfeito. Se quiser guardar uma cópia, faça um backup antes.</span>
+      <div class="row"><button class="btn ghost" data-close>Cancelar</button><button class="btn" id="yes" style="background:var(--out)">Apagar tudo</button></div>`);
+    s2.querySelector("#yes").onclick = () => { Object.assign(state, { tx: [], rules: {}, budgets: {}, settings: { ownNames: [] }, wallet: null, month: null }); persist(); close(); render(); toast("Dados apagados"); };
+  };
+}
+
+async function exportBackup() {
+  const data = JSON.stringify({ app: "caderno-gastos", version: 1, exportedAt: new Date().toISOString(), tx: state.tx, rules: state.rules, budgets: state.budgets, settings: state.settings, wallet: state.wallet });
+  const name = `caderno-gastos-${new Date().toISOString().slice(0, 10)}.json`;
+  const file = new File([data], name, { type: "application/json" });
+  try {
+    if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: name }); close(); return; }
+  } catch (e) { if (e && e.name === "AbortError") return; }
+  const a = document.createElement("a"); a.href = URL.createObjectURL(file); a.download = name; document.body.append(a); a.click(); a.remove();
+  close();
+}
+
+function importBackup(d) {
+  const byId = new Map(state.tx.map(t => [t.id, t]));
+  let n = 0;
+  for (const t of d.tx || []) { if (!byId.has(t.id)) n++; byId.set(t.id, t); }
+  state.tx = [...byId.values()];
+  Object.assign(state.rules, d.rules || {});
+  Object.assign(state.budgets, d.budgets || {});
+  if (d.settings) state.settings = { ...state.settings, ...d.settings, ownNames: [...new Set([...(state.settings.ownNames || []), ...(d.settings.ownNames || [])])] };
+  if (d.wallet) state.wallet = d.wallet;
+  return n;
+}
+
+$("file").onchange = async e => {
+  const files = [...e.target.files]; e.target.value = "";
+  let novas = 0, repetidas = 0, lidas = 0, backup = 0;
+  const have = new Set(state.tx.map(t => t.id));
+  for (const f of files) {
+    const text = await f.text();
+    if (/\.json$/i.test(f.name) || /^\s*\{/.test(text)) {
+      try { const d = JSON.parse(text); if (d.app !== "caderno-gastos") throw 0; backup += importBackup(d); lidas++; } catch (err) { toast("Esse arquivo não é um backup deste app."); }
+      continue;
+    }
+    const rows = parseStatement(f.name, text);
+    lidas += rows.length;
+    for (const r of rows) {
+      if (!r.id) r.id = "m-" + mkey(r.date + r.memo + r.amount);
+      if (have.has(r.id)) { repetidas++; continue; }
+      state.tx.push({ ...r, ...classify(r, state.rules, state.settings), manual: false });
+      have.add(r.id); novas++;
+    }
+  }
+  if (!lidas) { toast("Não reconheci esse arquivo. Use o OFX ou CSV exportado pelo Nubank."); return; }
+  persist();
+  state.month = months().slice(-1)[0];
+  render();
+  toast(backup ? `Backup restaurado · ${backup} movimentações novas` : `${novas} novas · ${repetidas} já estavam no app`);
+};
+
+load();
+render();
+if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});
+</script>
+</body>
+</html>
