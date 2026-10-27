@@ -7,9 +7,26 @@ const KINDS = {
   interna: { label: "Entre contas", short: "Entre contas" }
 };
 // as 8 primeiras têm cor própria nos gráficos (ordem fixa); as demais aparecem juntas como "Outras"
-const CATS_GASTO = ["Alimentação", "Pix para pessoas", "Compras online", "Conveniência e mercado", "Bares e saídas", "Transporte", "Esporte e lazer", "Apps e assinaturas", "Casa e contas", "Saúde", "Educação", "Outros gastos"];
+const CATS_GASTO = ["Alimentação", "Pix para pessoas", "Compras online", "Conveniência e mercado", "Lazer", "Transporte", "Apps e assinaturas", "Casa e contas", "Saúde", "Educação", "Outros gastos"];
 const CATS_ENTRADA = ["Salário", "Pix recebido", "Reembolso", "Outras entradas"];
 
+// categorias antigas que foram juntadas (nome antigo -> nome novo)
+const CAT_RENOMES = { "Bares e saídas": "Lazer", "Esporte e lazer": "Lazer" };
+// troca nomes antigos por novos em qualquer valor ou chave (só igualdade exata); devolve a cópia e se mudou
+function renomearCats(v) {
+  let mudou = false;
+  const go = x => {
+    if (typeof x === "string") { if (CAT_RENOMES[x]) { mudou = true; return CAT_RENOMES[x]; } return x; }
+    if (Array.isArray(x)) return x.map(go);
+    if (x && typeof x === "object") {
+      const o = {};
+      for (const [k, val] of Object.entries(x)) { const nk = CAT_RENOMES[k] || k; if (nk !== k) mudou = true; const nv = go(val); if (!(nk in o)) o[nk] = nv; else if (typeof o[nk] === "number" && typeof nv === "number") o[nk] += nv; }
+      return o;
+    }
+    return x;
+  };
+  const r = go(v); return { valor: r, mudou };
+}
 function norm(s) {
   return String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "")
     .replace(/[^a-z0-9]+/g, " ").trim();
@@ -34,10 +51,10 @@ function extractMerchant(memo) {
 
 const KEYWORDS = [
   [/sushi|churrasc|restau|lanch|acai|granlu|ifood|pizza|burger|padaria|lanchonete|cafe|food|esfiha|pastel|aspen/, "Alimentação"],
-  [/\bbar\b|poco loco|dinamite|chopp|pub\b|boteco|adega/, "Bares e saídas"],
+  [/\bbar\b|poco loco|dinamite|chopp|pub\b|boteco|adega/, "Lazer"],
   [/conveniencia|oxxo|est comercial|\bmercado\b|minimercado|supermerc|carrefour|pao de acucar|atacad|assai|hortifruti/, "Conveniência e mercado"],
   [/\bvlt\b|uber|\b99\b|onibus|metro|posto|combust|estaciona|sem parar|veloe|emtu|renovias|pedagio|autoban|conectcar|ccr /, "Transporte"],
-  [/sport|academia|smart ?fit|cinema|ingresso|teatro/, "Esporte e lazer"],
+  [/sport|academia|smart ?fit|cinema|ingresso|teatro/, "Lazer"],
   [/netflix|spotify|apple|google|prime video|disney|hbo|youtube|icloud|chatgpt|openai|anthropic|claude/, "Apps e assinaturas"],
   [/bytedance|tiktok|appmax|jim com|mercadolivre|mercado livre|shopee|amazon|magalu|aliexpress|shein|kabum|pagseguro|paypal/, "Compras online"],
   [/farmacia|drogaria|droga|raia|pacheco|drogal|clinica|hospital|laborat/, "Saúde"],
@@ -311,4 +328,4 @@ function parseStatement(name, text) {
   return parseCSV(text, name);
 }
 
-if (typeof module !== "undefined") module.exports = { precisaRevisao, parseNubankFaturaPDF, cardKey, parcelaKN, mergeImport, parseMoneyBR, parseOFX, parseCSV, parseNubankPDF, txSig, classify, parseStatement, mkey, norm, KINDS, CATS_GASTO, CATS_ENTRADA };
+if (typeof module !== "undefined") module.exports = { renomearCats, CAT_RENOMES, precisaRevisao, parseNubankFaturaPDF, cardKey, parcelaKN, mergeImport, parseMoneyBR, parseOFX, parseCSV, parseNubankPDF, txSig, classify, parseStatement, mkey, norm, KINDS, CATS_GASTO, CATS_ENTRADA };

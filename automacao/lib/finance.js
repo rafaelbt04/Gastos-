@@ -31,7 +31,7 @@ const GASTO_BUCKETS = ["essenciais", "dividas", "assinaturas", "lazer"];
 const DEFAULT_GROUP = {
   "Alimentação": "essenciais", "Conveniência e mercado": "essenciais", "Transporte": "essenciais", "Casa e contas": "essenciais",
   "Saúde": "essenciais", "Educação": "essenciais", "Apps e assinaturas": "assinaturas",
-  "Pix para pessoas": "lazer", "Compras online": "lazer", "Bares e saídas": "lazer", "Esporte e lazer": "lazer", "Outros gastos": "lazer"
+  "Pix para pessoas": "lazer", "Compras online": "lazer", "Lazer": "lazer", "Outros gastos": "lazer"
 };
 const FREQ = { mensal: 1, trimestral: 3, semestral: 6, anual: 12 };
 const FREQ_LABEL = { mensal: "mensal", trimestral: "trimestral", semestral: "semestral", anual: "anual" };
