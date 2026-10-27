@@ -293,7 +293,8 @@ function mergeImport(existing, rows, rules, settings) {
       if (hit) { usedCard.add(hit.id); if (r.fatura && hit.fatura !== r.fatura) { hit.fatura = r.fatura; res.update.push(hit); } res.repetidas++; continue; }
     }
     const nt = { ...r, ...classify(r, rules, settings), manual: false };
-    if (r.source === "cartao" && r.amount < 0) {
+    // compra do Apple Pay pode ter sido no crédito (vem na fatura) ou no débito (vem no extrato como "Compra no débito")
+    if (r.amount < 0 && (r.source === "cartao" || /^compra no d[ée]bito/i.test(r.memo || ""))) {
       const p = prov.find(t => !usedProv.has(t.id) && Math.abs(Math.round(t.amount * 100) - Math.round(r.amount * 100)) <= 1 && Math.abs(daysDiff(t.date, r.date)) <= 3);
       if (p) { usedProv.add(p.id); res.remove.push(p); res.substituidas++; if (p.manual) { nt.kind = p.kind; nt.cat = p.cat; nt.manual = true; } }
     }
