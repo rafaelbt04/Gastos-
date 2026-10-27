@@ -396,6 +396,7 @@ select, input[type=number], input[type=text], input[type=password], input[type=d
       <div class="card" id="cardTop"></div>
       <div class="card span2" id="cardAlerts" hidden></div>
     </div>
+      <div class="tab" id="sub-gastos-revisar" hidden><div id="revisarBox"></div></div>
       <div class="tab" id="sub-gastos-extrato" hidden>
       <label class="search"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
         <input id="q" type="text" placeholder="Buscar loja, pessoa ou categoria" autocomplete="off"></label>
@@ -524,8 +525,8 @@ const KEYWORDS = [
   [/conveniencia|oxxo|est comercial|\bmercado\b|minimercado|supermerc|carrefour|pao de acucar|atacad|assai|hortifruti/, "Conveniência e mercado"],
   [/\bvlt\b|uber|\b99\b|onibus|metro|posto|combust|estaciona|sem parar|veloe|emtu|renovias|pedagio|autoban|conectcar|ccr /, "Transporte"],
   [/sport|academia|smart ?fit|cinema|ingresso|teatro/, "Esporte e lazer"],
-  [/bytedance|netflix|spotify|apple|google|prime video|disney|hbo|youtube|icloud|chatgpt|openai|anthropic|claude/, "Apps e assinaturas"],
-  [/appmax|aspen|jim com|mercadolivre|mercado livre|shopee|amazon|magalu|aliexpress|shein|kabum|pagseguro|paypal/, "Compras online"],
+  [/netflix|spotify|apple|google|prime video|disney|hbo|youtube|icloud|chatgpt|openai|anthropic|claude/, "Apps e assinaturas"],
+  [/bytedance|tiktok|appmax|jim com|mercadolivre|mercado livre|shopee|amazon|magalu|aliexpress|shein|kabum|pagseguro|paypal/, "Compras online"],
   [/farmacia|drogaria|droga|raia|pacheco|drogal|clinica|hospital|laborat/, "Saúde"],
   [/puc|faculdade|livraria|curso|udemy|alura/, "Educação"],
   [/cpfl|sanasa|vivo|claro|tim\b|net\b|aluguel|condominio|energia|agua/, "Casa e contas"]
@@ -540,7 +541,9 @@ function classify(row, rules, settings) {
   const base = { merchant: titleCase(merchant), key };
   if (/^(aplicacao|resgate) rdb/.test(nm)) return { ...base, merchant: "Caixinha", key: "caixinha", kind: "caixinha", cat: "Caixinha" };
   if (/^(aplicacao|resgate) /.test(nm)) return { ...base, kind: "investimento", cat: "Carteira" };
-  if (rules && rules[key]) return { ...base, kind: rules[key].kind, cat: rules[key].cat };
+  // regra por direção (o que entra e o que sai de uma mesma pessoa podem ser coisas diferentes); senão, a regra geral da loja
+  const rule = rules && (rules[key + (row.amount > 0 ? "|+" : "|-")] || rules[key]);
+  if (rule) return { ...base, kind: rule.kind, cat: rule.cat };
   if (row.amount > 0 && row.source !== "cartao" && ((settings && settings.salarioFontes) || []).some(f => f && norm(merchant + " " + memo).includes(f))) return { ...base, kind: "entrada", cat: "Salário" };
   if (/pagamento (de|da) fatura|pagamento recebido/.test(nm)) return { ...base, merchant: "Fatura do cartão", kind: "interna", cat: "Fatura do cartão" };
   const own = ((settings && settings.ownNames) || []).map(norm);
@@ -743,6 +746,15 @@ function cardKey(t) {
 function parcelaKN(t) { const m = /parcela\s*(\d+)\s*\/\s*(\d+)/i.exec(t.memo || ""); return m ? m[1] + "/" + m[2] : ""; }
 const daysDiff = (a, b) => Math.round((new Date(b + "T12:00:00") - new Date(a + "T12:00:00")) / 864e5);
 
+// ===== lançamentos que pedem confirmação do usuário =====
+// Gasto sem categoria clara, Pix para/de pessoas (pode ser gasto, repasse ou reembolso) e entradas genéricas.
+function precisaRevisao(t) {
+  if (t.manual || t.revisado || t.provisorio) return false;
+  if (t.kind === "gasto" && (t.cat === "Outros gastos" || t.cat === "Pix para pessoas")) return true;
+  if (t.kind === "entrada" && (t.cat === "Pix recebido" || t.cat === "Outras entradas")) return true;
+  return false;
+}
+
 // ===== junção de uma importação com o que já existe (usada pelo app e pela automação) =====
 // Evita duplicar: mesmo id; mesmo lançamento da conta vindo em PDF/OFX/CSV (data+valor+descrição);
 // mesma compra do cartão vinda em CSV e em PDF (fatura+loja+parcela+valor, com tolerância de 2 centavos).
@@ -785,7 +797,7 @@ function parseStatement(name, text) {
   return parseCSV(text, name);
 }
 
-if (typeof module !== "undefined") module.exports = { parseNubankFaturaPDF, cardKey, parcelaKN, mergeImport, parseMoneyBR, parseOFX, parseCSV, parseNubankPDF, txSig, classify, parseStatement, mkey, norm, KINDS, CATS_GASTO, CATS_ENTRADA };
+if (typeof module !== "undefined") module.exports = { precisaRevisao, parseNubankFaturaPDF, cardKey, parcelaKN, mergeImport, parseMoneyBR, parseOFX, parseCSV, parseNubankPDF, txSig, classify, parseStatement, mkey, norm, KINDS, CATS_GASTO, CATS_ENTRADA };
 
 </script>
 <script>
@@ -1006,7 +1018,7 @@ function occurrences(st, ym) {
   const out = [];
   for (const f of st.fixas || []) { const o = fixaOcc(f, ym); if (o) out.push(o); }
   for (const s of st.assinaturas || []) { const o = subOcc(s, ym); if (o) out.push(o); }
-  for (const p of st.parcelas || []) { const o = parcOcc(p, ym); if (o) out.push(o); }
+  for (const p of st.parcelas || []) { if (parcelaCancelada(st, p)) continue; const o = parcOcc(p, ym); if (o) out.push(o); }
   return out.sort((a, b) => a.date.localeCompare(b.date));
 }
 
@@ -1031,6 +1043,7 @@ function reconcile(st, ym, today) {
     let best = null, bestScore = -1;
     for (const t of txs) {
       if (used.has(t.id) || !nameHit(o, t)) continue;
+      if (o.tipo === "assinatura" && t.source !== "cartao") continue;
       const v = -t.amount;
       if (!amountOk(o, v)) continue;
       let score = 1 - Math.abs(v - o.valor) / Math.max(o.valor, 1);
@@ -1256,7 +1269,7 @@ function projecao(st, today, n = 6) {
     const assin = r2(sum(occ.filter(o => o.tipo === "assinatura"), o => o.valor));
     const parc = r2(sum(occ.filter(o => o.tipo === "parcela"), o => o.valor));
     const comp = r2(fixas + assin + parc);
-    const terminam = (st.parcelas || []).filter(p => { const k = parcelaNum(p, m); return k === +p.n; }).map(p => ({ desc: p.desc, libera: parcelaValor(p, +p.n - 1 > 0 ? +p.n - 1 : +p.n) }));
+    const terminam = (st.parcelas || []).filter(p => { if (parcelaCancelada(st, p)) return false; const k = parcelaNum(p, m); return k === +p.n; }).map(p => ({ desc: p.desc, libera: parcelaValor(p, +p.n - 1 > 0 ? +p.n - 1 : +p.n) }));
     out.push({ m, renda, fixas, assin, parc, comp, varEst: r2(media.ess + media.lazer), livre: r2(renda - comp - media.ess - media.lazer), pct: renda > 0 ? comp / renda * 100 : null, terminam });
   }
   return { meses: out, media };
@@ -1264,6 +1277,7 @@ function projecao(st, today, n = 6) {
 
 // ---------- parcelas: resumo ----------
 function parcelaResumo(st, p, today) {
+  if (parcelaCancelada(st, p)) { const total = +p.total > 0 ? +p.total : r2(parcelaValor(p, 1) * +p.n); return { pagas: 0, restantes: 0, pago: 0, falta: 0, total, mensal: 0, fimYM: ymOf(p.proxima), kNow: 0, ativa: false, cancelada: true, estornada: !!(p.chave && estornoCobre(st, p.chave)), proxima: null, proxK: 0 }; }
   // pagas = as declaradas antes da próxima (atual - 1) + as que já venceram desde então
   const ym = ymOf(today), n = +p.n, pym = ymOf(p.proxima);
   const passou = monthsBetween(pym, ym) + (dateIn(ym, +p.proxima.slice(8)) <= today ? 1 : 0);
@@ -1288,25 +1302,40 @@ function sugestoes(st) {
     const a = norm(x.nome || x.desc || ""), m = norm(nome);
     return a.length >= 4 && (m.includes(a) || a.includes(m) || a.split(" ").filter(w => w.length >= 5).some(w => m.includes(w)));
   });
+  const rec = new Set(((st.sugestoes || {}).rejeitadas) || []), recusada = id => rec.has(id);
   const byKey = {};
   for (const t of (st.tx || []).filter(t => t.kind === "gasto" && t.amount < 0)) (byKey[t.key] ||= []).push(t);
   for (const [k, list] of Object.entries(byKey)) {
     const parc = list.map(t => [t, /parcela\s*(\d+)\s*\/\s*(\d+)/i.exec(t.memo || "")]).filter(x => x[1]);
     if (parc.length) {
       const [t, m] = parc.sort((a, b) => b[0].date.localeCompare(a[0].date))[0];
-      if (!has(t.merchant, k)) out.parcelas.push({ desc: t.merchant, chave: k, valorParcela: -t.amount, n: +m[2], atual: +m[1], proxima: t.date, total: r2(-t.amount * +m[2]), cat: t.cat, pagamento: t.source === "cartao" ? "cartao" : "conta" });
+      if (!has(t.merchant, k) && !recusada("parc:" + k) && +m[1] < +m[2] && !estornoCobre(st, k)) out.parcelas.push({ desc: t.merchant, chave: k, valorParcela: -t.amount, n: +m[2], atual: +m[1], proxima: t.date, total: r2(-t.amount * +m[2]), cat: t.cat, pagamento: t.source === "cartao" ? "cartao" : "conta" });
       continue;
     }
     const meses = new Set(list.map(t => t.date.slice(0, 7)));
     const vals = list.map(t => -t.amount), avg = sum(vals) / vals.length;
     const estavel = vals.every(v => Math.abs(v - avg) <= Math.max(2, avg * 0.1));
-    if ((list[0].cat === "Apps e assinaturas" || (meses.size >= 2 && estavel && list.length === meses.size)) && !has(list[0].merchant, k)) {
+    // assinatura: SEMPRE no crédito, e só se for recorrente (2+ meses, mesmo valor) ou um serviço de assinatura conhecido
+    const noCredito = list.every(t => t.source === "cartao" && !t.provisorio);
+    const conhecido = SERVICOS_ASSINATURA.test(norm(list[0].merchant));
+    if (noCredito && ((meses.size >= 2 && estavel && list.length === meses.size) || conhecido) && !has(list[0].merchant, k) && !recusada("sub:" + k)) {
       const last = list.slice().sort((a, b) => b.date.localeCompare(a.date))[0];
       out.assinaturas.push({ nome: last.merchant, chave: k, valor: -last.amount, freq: "mensal", proxima: dateIn(addMonths(ymOf(last.date), 1), +last.date.slice(8)), cat: last.cat, pagamento: last.source === "cartao" ? "cartao" : "conta", visto: meses.size });
     }
   }
   return out;
 }
+
+const SERVICOS_ASSINATURA = /netflix|spotify|deezer|disney|hbo|\bmax\b|prime video|amazon prime|youtube|google one|icloud|apple com bill|apple\.com|globoplay|paramount|crunchyroll|claude|anthropic|openai|chatgpt|canva|adobe|microsoft|office 365|xbox|playstation|psn|nintendo|smart ?fit|bluefit|academia|duolingo|notion|dropbox|kindle|audible|ifood club|uber one|tinder|linkedin/;
+
+// O estorno devolveu tudo o que já foi cobrado dessa compra parcelada? Então ela foi cancelada.
+function estornoCobre(st, chave) {
+  const tx = (st.tx || []).filter(t => t.key === chave && t.source === "cartao" && t.kind === "gasto");
+  const estornos = sum(tx.filter(t => t.amount > 0), t => t.amount);
+  const cobrado = -sum(tx.filter(t => t.amount < 0), t => t.amount);
+  return estornos > 0 && estornos >= cobrado - 0.01;
+}
+function parcelaCancelada(st, p) { return (p.status && p.status !== "ativa") || (p.chave && estornoCobre(st, p.chave)); }
 
 // ---------- assinaturas: oportunidades ----------
 function oportunidades(st, today) {
@@ -1397,7 +1426,7 @@ function simGuardarAteFimAno(st, today) {
   return { meses: pr.meses.map(m => m.m), plan: r2(plan + atual), realista: r2(realista + atual), atual: r2(atual), base: pr.media.base };
 }
 
-if (typeof module !== "undefined") module.exports = { faturaDaData, caixinhasSaldo, isSalaryTx, salarioInfo, salarioRecebidoMes, sugestoes, BUCKETS, DEFAULT_GROUP, FREQ, perfilOf, groupOf, subOcc, parcOcc, fixaOcc, occurrences, reconcile, realizado, rendaPlan, rendaReal, compromissos, plano, faturaCiclos, disponivel, projecao, parcelaResumo, oportunidades, recomendacoes, simInvestirMais, simCancelar, simNovaParcela, simGuardarAteFimAno, assinaturasMensalEquiv, addMonths, monthsBetween, dateIn, mediaVariavel, proximoSalario, salarioRecebido, parcelaValor, parcelaNum };
+if (typeof module !== "undefined") module.exports = { parcelaCancelada, estornoCobre, faturaDaData, caixinhasSaldo, isSalaryTx, salarioInfo, salarioRecebidoMes, sugestoes, BUCKETS, DEFAULT_GROUP, FREQ, perfilOf, groupOf, subOcc, parcOcc, fixaOcc, occurrences, reconcile, realizado, rendaPlan, rendaReal, compromissos, plano, faturaCiclos, disponivel, projecao, parcelaResumo, oportunidades, recomendacoes, simInvestirMais, simCancelar, simNovaParcela, simGuardarAteFimAno, assinaturasMensalEquiv, addMonths, monthsBetween, dateIn, mediaVariavel, proximoSalario, salarioRecebido, parcelaValor, parcelaNum };
 
 // ===== Assistente financeiro: telas Início, Contas, Plano e Renda e saldos =====
 const TODAY = () => todayKey();
@@ -1475,28 +1504,27 @@ function editAssinatura(a) {
   a = { freq: "mensal", status: "ativa", pagamento: "cartao", cartao: cartaoNome(), cat: "Apps e assinaturas", uso: "", ...(a || {}) };
   formSheet({
     title: isNew ? "Nova assinatura" : a.nome, sub: "Assinatura", values: a,
-    note: "O app usa o nome para reconhecer a cobrança no extrato ou na fatura e não contar duas vezes.",
+    note: "Assinaturas são cobradas no cartão de crédito. O app usa o nome para reconhecer a cobrança na fatura e não contar duas vezes.",
     fields: [
       { k: "nome", label: "Serviço", req: true, ph: "Netflix, Spotify, academia…" },
       { k: "valor", label: "Valor cobrado", type: "money", req: true, half: true },
       { k: "freq", label: "Frequência", type: "select", half: true, opts: [["mensal", "Mensal"], ["trimestral", "Trimestral"], ["semestral", "Semestral"], ["anual", "Anual"]] },
       { k: "proxima", label: "Próxima cobrança", type: "date", req: true, half: true },
       { k: "status", label: "Status", type: "select", half: true, opts: STATUS_OPTS },
-      { k: "pagamento", label: "Forma de pagamento", type: "select", half: true, opts: PAG_OPTS },
-      { k: "cartao", label: "Cartão", half: true, opt: true },
+      { k: "cartao", label: "Cartão de crédito", opt: true },
       { k: "cat", label: "Categoria", type: "select", opts: CAT_OPTS() },
       { k: "tipoServico", label: "Tipo de serviço", type: "select", opt: true, hint: "Serve para achar serviços parecidos pagos ao mesmo tempo.", opts: [["", "—"], ["vídeo", "Streaming de vídeo"], ["música", "Música"], ["nuvem", "Armazenamento em nuvem"], ["academia", "Academia"], ["jogos", "Jogos"], ["leitura", "Leitura e notícias"], ["delivery", "Clube de delivery"], ["software", "Apps e software"], ["outro", "Outro"]] },
       { k: "uso", label: "Quanto você usa", type: "select", opt: true, opts: [["", "Não sei dizer"], ["frequente", "Uso bastante"], ["as_vezes", "Uso às vezes"], ["baixo", "Quase não uso"]] },
       { k: "inicio", label: "Início", type: "date", half: true, opt: true },
       { k: "fim", label: "Término", type: "date", half: true, opt: true }
     ],
-    onSave: o => { upsertIn(state.assinaturas, { ...a, ...o, id: a.id || uid() }); markCfg("assinaturas"); toast(isNew ? "Assinatura cadastrada" : "Assinatura salva"); },
+    onSave: o => { upsertIn(state.assinaturas, { ...a, ...o, pagamento: "cartao", id: a.id || uid() }); markCfg("assinaturas"); if (a.chave) { state.sugestoes.rejeitadas = [...new Set([...(state.sugestoes.rejeitadas || []), "sub:" + a.chave])]; markCfg("sugestoes"); } toast(isNew ? "Assinatura cadastrada" : "Assinatura salva"); },
     onDelete: isNew ? null : () => { state.assinaturas = state.assinaturas.filter(x => x.id !== a.id); markCfg("assinaturas"); toast("Assinatura excluída"); }
   });
 }
 function editParcela(p) {
   const isNew = !p || !p.id;
-  p = { pagamento: "cartao", cartao: cartaoNome(), cat: "Compras online", ...(p || {}) };
+  p = { pagamento: "cartao", cartao: cartaoNome(), cat: "Compras online", status: "ativa", ...(p || {}) };
   const vals = { ...p, pagas: p.atual ? p.atual - 1 : 0 };
   formSheet({
     title: isNew ? "Nova compra parcelada" : p.desc, sub: "Compra parcelada", values: vals,
@@ -1511,7 +1539,8 @@ function editParcela(p) {
       { k: "data", label: "Data da compra", type: "date", half: true, opt: true },
       { k: "pagamento", label: "Forma de pagamento", type: "select", half: true, opts: PAG_OPTS },
       { k: "cartao", label: "Cartão", half: true, opt: true },
-      { k: "cat", label: "Categoria", type: "select", opts: CAT_OPTS() }
+      { k: "cat", label: "Categoria", type: "select", opts: CAT_OPTS() },
+      { k: "status", label: "Situação", type: "select", opts: [["ativa", "Em andamento"], ["cancelada", "Cancelada ou estornada (não cobra mais)"]] }
     ],
     onSave: o => {
       if (o.total == null && o.valorParcela == null) return "Informe o valor total ou o valor da parcela.";
@@ -1697,8 +1726,8 @@ function renderInicio() {
     : `<p class="hint">Nada previsto. Cadastre contas fixas, assinaturas e parcelas na aba Contas para ver o que vem por aí.</p>`);
 
   // recomendações
-  const pendAuto = (state.sugestoes && state.sugestoes.itens || []).length;
-  $("aRecs").innerHTML = (pendAuto ? `<button class="alert info" data-go="automacao" style="border:0;text-align:left;width:100%;cursor:pointer"><span class="ic">${pendAuto}</span><div><b>${pendAuto === 1 ? "1 sugestão" : pendAuto + " sugestões"} da automação para aprovar</b><br><span class="hint">categorias, assinaturas ou parcelas encontradas nos extratos →</span></div></button>` : "") + `<div class="card-head"><h2>O que o app sugere</h2><button class="btn ghost small" data-go="dicas">Ver todas (${recs.length})</button></div><div class="alerts">${recs.slice(0, 4).map(recItem).join("")}</div>`;
+  const pendAuto = (state.sugestoes && state.sugestoes.itens || []).length, pendRev = revisarLista().length;
+  $("aRecs").innerHTML = (pendRev ? `<button class="alert warn" data-go="revisar" style="border:0;text-align:left;width:100%;cursor:pointer"><span class="ic">${pendRev}</span><div><b>${pendRev === 1 ? "1 lançamento" : pendRev + " lançamentos"} para você revisar</b><br><span class="hint">Pix e gastos que o app não sabe o que são →</span></div></button>` : "") + (pendAuto ? `<button class="alert info" data-go="automacao" style="border:0;text-align:left;width:100%;cursor:pointer"><span class="ic">${pendAuto}</span><div><b>${pendAuto === 1 ? "1 sugestão" : pendAuto + " sugestões"} da automação para aprovar</b><br><span class="hint">categorias, assinaturas ou parcelas encontradas nos extratos →</span></div></button>` : "") + `<div class="card-head"><h2>O que o app sugere</h2><button class="btn ghost small" data-go="dicas">Ver todas (${recs.length})</button></div><div class="alerts">${recs.slice(0, 4).map(recItem).join("")}</div>`;
 }
 function stackSeg(v, tot, c) { return v > 0 && tot > 0 ? `<i style="width:${Math.min(100, v / tot * 100).toFixed(2)}%;background:${c}"></i>` : ""; }
 function recItem(r) { const [cls, ic] = LVL[r.nivel]; return `<div class="alert ${cls}"><span class="ic">${ic}</span><div><div>${esc(r.titulo)}</div><details class="why"><summary>Por quê?</summary><p>${esc(r.porque)}</p></details>${r.acao ? `<button class="linkbtn" data-go="${r.acao}">${{ perfil: "Ajustar renda e saldos", assinaturas: "Ver assinaturas", parcelas: "Ver parcelas", limites: "Ver tetos", plano: "Ver plano", importar: "Importar extrato" }[r.acao] || "Abrir"} →</button>` : ""}</div></div>`; }
@@ -1766,13 +1795,14 @@ function renderAssinaturas(T, pl) {
       return `<button class="irow" data-sub="${esc(s.id)}"><span class="av" style="--c:${TIPO_COR.assinatura}">${esc(initials(s.nome))}</span><span class="t"><span class="m">${esc(s.nome)} ${stt}</span><span class="c">${fmt(+s.valor)} ${FREQ_LABEL[s.freq] || "mensal"} · próxima ${dCurta(nextSubDate(s, T))}${s.pagamento === "cartao" ? " · " + esc(s.cartao || "cartão") : " · conta"}</span></span><span class="a"><span class="num">${fmt(+s.valor / (FREQ[s.freq] || 1))}</span><span class="c">/mês</span></span></button>`;
     }).join("")}</div>` : `<p class="hint">Nenhuma assinatura cadastrada. Cadastre Netflix, Spotify, academia, iCloud e outras, ou use as sugestões tiradas do seu extrato.</p>`}
   </div>
-  ${sg.length ? `<div class="card"><div class="card-head"><h2>Encontrei no seu extrato</h2><span class="hint">confirme o que é assinatura</span></div><div class="ilist">${sg.map((s, i) => `<div class="irow static"><span class="av" style="--c:var(--s9)">${esc(initials(s.nome))}</span><span class="t"><span class="m">${esc(s.nome)}</span><span class="c">${fmt(s.valor)} · ${s.visto > 1 ? `cobrado em ${s.visto} meses` : "categoria Apps e assinaturas"}</span></span><button class="btn ghost small" data-sgsub="${i}">Adicionar</button></div>`).join("")}</div></div>` : ""}
+  ${sg.length ? `<div class="card"><div class="card-head"><h2>Encontrei no seu extrato</h2><span class="hint">confirme o que é assinatura</span></div><div class="ilist">${sg.map((s, i) => `<div class="irow static"><span class="av" style="--c:var(--s9)">${esc(initials(s.nome))}</span><span class="t"><span class="m">${esc(s.nome)}</span><span class="c">${fmt(s.valor)} · ${s.visto > 1 ? `cobrado em ${s.visto} meses` : "categoria Apps e assinaturas"}</span></span><span class="a" style="flex-direction:row;gap:6px"><button class="btn ghost small" data-sgsub="${i}">Adicionar</button><button class="btn ghost small" data-nosub="${i}" aria-label="Não é assinatura" title="Não é assinatura">✕</button></span></div>`).join("")}</div><span class="hint">✕ = não é assinatura (não aparece de novo).</span></div>` : ""}
   <div class="card"><div class="card-head"><h2>Próximas cobranças</h2><span class="hint">3 meses</span></div>${prox.length ? `<div class="vlist">${prox.slice(0, 10).map(o => `<div class="vrow"><span class="vd"><b>${o.date.slice(8)}</b>${monthName(o.date.slice(0, 7), true)}</span><span class="t"><span class="m">${esc(o.nome)}</span><span class="c">${FREQ_LABEL[o.ref.freq]}${o.forma === "cartao" ? " · na fatura do " + esc(o.ref.cartao || "cartão") : " · sai da conta"}</span></span><span class="a num">${fmt(o.valor)}</span></div>`).join("")}</div>` : `<p class="hint">Sem cobranças previstas.</p>`}</div>
   <div class="card"><div class="card-head"><h2>Onde economizar</h2></div>${op.length ? `<div class="alerts">${op.map(o => `<div class="alert warn"><span class="ic">$</span><div>${esc(o.texto)} <b class="num">até ${fmt(o.economia)}/mês</b></div></div>`).join("")}</div>` : `<p class="hint">Nada encontrado por enquanto. Para o app achar oportunidades, marque em cada assinatura o tipo de serviço e quanto você usa.</p>`}</div>
   ${ativas.length ? `<div class="card"><div class="card-head"><h2>Simular cancelamento</h2><span class="hint">marque o que cortaria</span></div><div class="checks" id="simSubs">${ativas.map(s => `<label class="check"><input type="checkbox" value="${esc(s.id)}"> ${esc(s.nome)} <span class="hint">${fmt(+s.valor)} ${FREQ_LABEL[s.freq]}</span></label>`).join("")}</div><div id="simSubsOut" class="simout"><span class="hint">Marque uma ou mais assinaturas.</span></div></div>` : ""}`;
   $("addSub").onclick = () => editAssinatura();
   for (const b of document.querySelectorAll("[data-sub]")) b.onclick = () => editAssinatura(state.assinaturas.find(x => x.id === b.dataset.sub));
   for (const b of document.querySelectorAll("[data-sgsub]")) b.onclick = () => editAssinatura(sg[+b.dataset.sgsub]);
+  for (const b of document.querySelectorAll("[data-nosub]")) b.onclick = () => { const x = sg[+b.dataset.nosub]; recusarSugestao({ id: "sub:" + x.chave }); persist(); render(); toast(`${x.nome} não será mais sugerida como assinatura`); };
   const box = $("simSubs"); if (box) box.onchange = () => { const ids = [...box.querySelectorAll("input:checked")].map(i => i.value); $("simSubsOut").innerHTML = ids.length ? simCancelHtml(ids, T) : `<span class="hint">Marque uma ou mais assinaturas.</span>`; };
 }
 function nextSubDate(s, T) { const ym = T.slice(0, 7); for (let i = 0; i < 13; i++) { const o = subOcc({ ...s, status: "ativa" }, addMonths(ym, i)); if (o && o.date >= T) return o.date; } return s.proxima; }
@@ -1802,9 +1832,9 @@ function renderParcelas(T, pl) {
     ${tile("Livre de parcelas em", ultimo ? cap(mCurto(addMonths(ultimo, 1))) : "—", ultimo ? "mês seguinte à última parcela" : "sem parcelas")}
   </div></div>
   <div class="card"><div class="card-head"><h2>Compras parceladas</h2><button class="btn small" id="addParc">+ Nova</button></div>
-    ${res.length ? `<div class="ilist">${res.sort((a, b) => (b.r.ativa - a.r.ativa) || a.r.fimYM.localeCompare(b.r.fimYM)).map(({ p, r }) => `<button class="irow" data-parc="${esc(p.id)}"><span class="av" style="--c:${TIPO_COR.parcela}">${r.pagas}/${p.n}</span><span class="t"><span class="m">${esc(p.desc)} ${r.ativa ? "" : chip("quitada", "ok")}</span><span class="c">${fmt(parcelaValor(p, Math.max(r.kNow, 1)))} por mês · termina em ${mCurto(r.fimYM)}${p.pagamento === "cartao" ? " · " + esc(p.cartao || "cartão") : ""}</span>${bar(r.pagas, +p.n, TIPO_COR.parcela)}</span><span class="a"><span class="num">${fmt(r.falta)}</span><span class="c">falta</span></span></button>`).join("")}</div>` : `<p class="hint">Nenhuma compra parcelada cadastrada.</p>`}
+    ${res.length ? `<div class="ilist">${res.sort((a, b) => (b.r.ativa - a.r.ativa) || a.r.fimYM.localeCompare(b.r.fimYM)).map(({ p, r }) => `<button class="irow" data-parc="${esc(p.id)}"><span class="av" style="--c:${TIPO_COR.parcela}">${r.pagas}/${p.n}</span><span class="t"><span class="m">${esc(p.desc)} ${r.cancelada ? chip(r.estornada ? "estornada" : "cancelada", "muted") : r.ativa ? "" : chip("quitada", "ok")}</span><span class="c">${r.cancelada ? (r.estornada ? "o estorno devolveu o que foi cobrado: não entra mais no orçamento" : "não cobra mais") : `${fmt(parcelaValor(p, Math.max(r.kNow, 1)))} por mês · termina em ${mCurto(r.fimYM)}`}${p.pagamento === "cartao" ? " · " + esc(p.cartao || "cartão") : ""}</span>${bar(r.pagas, +p.n, TIPO_COR.parcela)}</span><span class="a"><span class="num">${fmt(r.falta)}</span><span class="c">falta</span></span></button>`).join("")}</div>` : `<p class="hint">Nenhuma compra parcelada cadastrada.</p>`}
   </div>
-  ${sg.length ? `<div class="card"><div class="card-head"><h2>Encontrei na fatura</h2><span class="hint">compras com "Parcela x/y"</span></div><div class="ilist">${sg.map((s, i) => `<div class="irow static"><span class="av" style="--c:var(--s9)">${s.atual}/${s.n}</span><span class="t"><span class="m">${esc(s.desc)}</span><span class="c">${fmt(s.valorParcela)} × ${s.n}</span></span><button class="btn ghost small" data-sgparc="${i}">Adicionar</button></div>`).join("")}</div></div>` : ""}
+  ${sg.length ? `<div class="card"><div class="card-head"><h2>Encontrei na fatura</h2><span class="hint">compras com "Parcela x/y"</span></div><div class="ilist">${sg.map((s, i) => `<div class="irow static"><span class="av" style="--c:var(--s9)">${s.atual}/${s.n}</span><span class="t"><span class="m">${esc(s.desc)}</span><span class="c">${fmt(s.valorParcela)} × ${s.n}</span></span><span class="a" style="flex-direction:row;gap:6px"><button class="btn ghost small" data-sgparc="${i}">Adicionar</button><button class="btn ghost small" data-noparc="${i}" aria-label="Ignorar" title="Ignorar">✕</button></span></div>`).join("")}</div></div>` : ""}
   <div class="card"><div class="card-head"><h2>Parcelas nos próximos 12 meses</h2><span class="hint">toque nas barras</span></div>
     ${ativas.length ? `<div class="vbars tall">${months.map((m, i) => `<div class="vbar" title="${cap(monthName(m))}: ${fmt(tot[i])}${ativas.filter((x, j) => per[i][j] && parcelaNum(x.p, m) === +x.p.n).map(x => " · última de " + x.p.desc).join("")}"><b>${tot[i] && (i === 0 || Math.abs(tot[i] - tot[i - 1]) > 0.5) ? fmt0(tot[i]).replace("R$ ", "") : ""}</b><span class="stackv" style="height:${(tot[i] / mx * 100).toFixed(1)}%">${per[i].map((v, j) => v ? `<i style="flex:${v};background:${colors(j)}"></i>` : "").join("")}</span><span>${monthName(m, true).slice(0, 3)}${m.endsWith("-01") && i ? "<br>" + m.slice(0, 4) : ""}</span></div>`).join("")}</div>
     <div class="keyrow">${ativas.slice(0, 8).map((x, j) => `<span><i class="sq" style="--c:${colors(j)}"></i>${esc(x.p.desc)}</span>`).join("")}</div>
@@ -1813,6 +1843,7 @@ function renderParcelas(T, pl) {
   $("addParc").onclick = () => editParcela();
   for (const b of document.querySelectorAll("[data-parc]")) b.onclick = () => editParcela(state.parcelas.find(x => x.id === b.dataset.parc));
   for (const b of document.querySelectorAll("[data-sgparc]")) b.onclick = () => { const s = sg[+b.dataset.sgparc]; editParcela({ ...s, atual: s.atual }); };
+  for (const b of document.querySelectorAll("[data-noparc]")) b.onclick = () => { const x = sg[+b.dataset.noparc]; recusarSugestao({ id: "parc:" + x.chave }); persist(); render(); toast("Sugestão ignorada"); };
 }
 
 function renderFixas(T, pl) {
@@ -2032,7 +2063,50 @@ function renderAutomacao() {
   if (!atalhoToken && !atalhoCarregando && !atalhoTentou) carregarToken().then(() => { if (state.tab === "mais" && state.sub.mais === "automacao") render(); });
 }
 
-const APP_VERSION = "11";
+
+// ---------------- REVISAR ----------------
+function revisarLista() { return state.tx.filter(precisaRevisao).sort((a, b) => b.date.localeCompare(a.date)); }
+function renderRevisar() {
+  const list = revisarLista();
+  $("revisarBox").innerHTML = `<div class="card"><div class="card-head"><h2>Para você revisar</h2><span class="pill ${list.length ? "warn" : "ok"}">${list.length}</span></div>
+    <span class="hint">Lançamentos que o app não tem certeza do que são: gastos sem categoria clara, Pix para pessoas (gasto, repasse ou empréstimo?) e Pix recebidos (salário, reembolso ou repasse?). Toque para dizer o que é. Ao escolher, você pode aplicar a todos da mesma loja ou pessoa, e a regra vale para as próximas importações.</span>
+    ${list.length ? `<div class="txlist" style="box-shadow:none">${list.map(t => `<button class="tx ${KCOLOR[t.kind]}" data-rev="${esc(t.id)}"><span class="av" style="--c:${t.kind === "gasto" ? catColor(t.cat) : kindColor(t.kind)}">${esc(initials(t.merchant))}</span><span class="t"><div class="m">${esc(t.merchant)}${isCred(t) ? '<span class="badge">crédito</span>' : ""}</div><div class="c">${dCurta(t.date)} · hoje: ${esc(subline(t))}</div></span><span class="a">${t.amount > 0 ? "+" : ""}${fmt(t.amount)}</span></button>`).join("")}</div>` : `<p class="empty">Tudo revisado. Novos lançamentos duvidosos aparecem aqui.</p>`}</div>`;
+  for (const b of document.querySelectorAll("[data-rev]")) b.onclick = () => openRevisar(state.tx.find(t => t.id === b.dataset.rev));
+}
+function openRevisar(t) {
+  if (!t) return;
+  const opcoes = t.amount < 0
+    ? [["gasto", "Gasto"], ["interna", "Repasse ou entre minhas contas (não é gasto)"], ["investimento", "Investimento"]]
+    : [["entrada", "Entrada (dinheiro meu)"], ["interna", "Repasse ou devolução (não é renda)"], ["gasto", "Estorno de compra"]];
+  let kind = t.kind;
+  const cats = k => k === "gasto" ? CATS_GASTO : k === "entrada" ? CATS_ENTRADA : k === "investimento" ? ["Carteira"] : ["Entre minhas contas", "Repasse"];
+  const s = sheet(`<div style="display:flex;gap:12px;align-items:center"><span class="av" style="--c:${catColor(t.cat)};width:44px;height:44px;border-radius:13px">${esc(initials(t.merchant))}</span><div style="min-width:0"><span class="label">${new Date(t.date + "T12:00").toLocaleDateString("pt-BR", { weekday: "short", day: "numeric", month: "long" })} · ${isCred(t) ? "crédito" : "conta"}</span><h2 style="font-size:1.15rem">${esc(t.merchant)}</h2></div></div>
+    <div class="num" style="font-size:1.5rem">${t.amount > 0 ? "+" : ""}${fmt(t.amount)}</div>
+    <div class="memo">${esc(t.memo)}</div>
+    <div><span class="label">O que é?</span><div class="seg" id="rvKind">${opcoes.map(([k, l]) => `<button data-k="${k}" aria-pressed="${k === kind}">${esc(l)}</button>`).join("")}</div></div>
+    <div><span class="label">Categoria</span><div class="seg" id="rvCat"></div></div>
+    <label class="check"><input type="checkbox" id="rvAll" checked> Aplicar a ${t.amount > 0 ? "tudo que eu receber de" : "tudo que eu pagar para"} “${esc(t.merchant)}”, agora e nas próximas importações</label>
+    <div class="row"><button class="btn ghost" id="rvKeep" style="margin-right:auto">Está certo assim</button><button class="btn ghost" data-close>Depois</button></div>`);
+  let cat = cats(kind).includes(t.cat) ? t.cat : null;
+  const drawCats = () => {
+    s.querySelector("#rvCat").innerHTML = cats(kind).map(c => `<button data-c="${esc(c)}" aria-pressed="${c === cat}">${esc(c)}</button>`).join("");
+  };
+  drawCats();
+  const salvar = (k, c) => {
+    const all = s.querySelector("#rvAll").checked;
+    const alvo = all ? state.tx.filter(x => x.key === t.key && Math.sign(x.amount) === Math.sign(t.amount) && !x.manual) : [t];
+    if (!alvo.includes(t)) alvo.push(t);
+    if (all) { state.rules[t.key + (t.amount > 0 ? "|+" : "|-")] = { kind: k, cat: c }; markCfg("rules"); }
+    for (const x of alvo) { x.kind = k; x.cat = c; x.manual = true; x.revisado = true; }
+    markTx(alvo); close(); persist(); render();
+    toast(alvo.length > 1 ? `${alvo.length} lançamentos atualizados` : "Classificação salva");
+  };
+  s.querySelector("#rvKind").onclick = e => { const b = e.target.closest("[data-k]"); if (!b) return; kind = b.dataset.k; cat = null; s.querySelectorAll("#rvKind button").forEach(x => x.setAttribute("aria-pressed", x.dataset.k === kind)); drawCats(); if (cats(kind).length === 1) salvar(kind, cats(kind)[0]); };
+  s.querySelector("#rvCat").onclick = e => { const b = e.target.closest("[data-c]"); if (!b) return; salvar(kind, b.dataset.c); };
+  s.querySelector("#rvKeep").onclick = () => { t.revisado = true; t.manual = true; markTx([t]); close(); persist(); render(); toast("Mantido como está"); };
+}
+
+const APP_VERSION = "12";
 // ===== utilidades =====
 const fmt = v => (v < -0.004 ? "−" : "") + "R$ " + Math.abs(v).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmt0 = v => (v < -0.5 ? "−" : "") + "R$ " + Math.abs(v).toLocaleString("pt-BR", { maximumFractionDigits: 0 });
@@ -2057,14 +2131,15 @@ function spendOf(list) { return -list.filter(t => t.kind === "gasto").reduce((a,
 
 const TABS = { inicio: "Início", gastos: "Gastos", contas: "Contas", plano: "Plano", mais: "Mais" };
 const SUBS = {
-  gastos: [["resumo", "Resumo"], ["extrato", "Extrato"]],
+  gastos: [["resumo", "Resumo"], ["extrato", "Extrato"], ["revisar", "Revisar"]],
   contas: [["assinaturas", "Assinaturas"], ["parcelas", "Parcelas"], ["fixas", "Contas fixas"]],
   plano: [["distribuicao", "Distribuição"], ["simular", "Simular"], ["dicas", "Recomendações"]],
   mais: [["perfil", "Renda e saldos"], ["automacao", "Automação"], ["carteira", "Carteira"], ["importar", "Importar"]]
 };
-const ALIAS = { painel: ["gastos", "resumo"], resumo: ["gastos", "resumo"], extrato: ["gastos", "extrato"], limites: ["plano", "distribuicao"], plano: ["plano", "distribuicao"], simular: ["plano", "simular"], dicas: ["plano", "dicas"],
+const ALIAS = { painel: ["gastos", "resumo"], resumo: ["gastos", "resumo"], extrato: ["gastos", "extrato"], revisar: ["gastos", "revisar"], limites: ["plano", "distribuicao"], plano: ["plano", "distribuicao"], simular: ["plano", "simular"], dicas: ["plano", "dicas"],
   assinaturas: ["contas", "assinaturas"], parcelas: ["contas", "parcelas"], fixas: ["contas", "fixas"], contas: ["contas", null], perfil: ["mais", "perfil"], automacao: ["mais", "automacao"], carteira: ["mais", "carteira"], importar: ["mais", "importar"], inicio: ["inicio", null], gastos: ["gastos", null], mais: ["mais", null] };
 const MONTH_TABS = { gastos: 1 };
+const subLabel = (tab, k, l) => tab === "gastos" && k === "revisar" ? `${l}${revisarLista().length ? ` (${revisarLista().length})` : ""}` : l;
 
 // ===== desenho =====
 function render() {
@@ -2084,13 +2159,13 @@ function render() {
   if (subs) {
     const cur = state.sub[state.tab] || subs[0][0]; state.sub[state.tab] = cur;
     const seg = $("seg-" + state.tab);
-    seg.innerHTML = subs.map(([k, l]) => `<button role="tab" data-sub-tab="${k}" aria-selected="${k === cur}">${l}</button>`).join("");
+    seg.innerHTML = subs.map(([k, l]) => `<button role="tab" data-sub-tab="${k}" aria-selected="${k === cur}">${subLabel(state.tab, k, l)}</button>`).join("");
     for (const [k] of subs) { const el = $(`sub-${state.tab}-${k}`); if (el) el.hidden = k !== cur; }
   }
   const sub = state.sub[state.tab];
   try {
     if (state.tab === "inicio") renderInicio();
-    else if (state.tab === "gastos") sub === "extrato" ? renderExtrato() : renderPainel();
+    else if (state.tab === "gastos") sub === "extrato" ? renderExtrato() : sub === "revisar" ? renderRevisar() : renderPainel();
     else if (state.tab === "contas") renderContas();
     else if (state.tab === "plano") renderPlano();
     else if (state.tab === "mais") sub === "carteira" ? renderCarteira() : sub === "importar" ? renderImportar() : sub === "automacao" ? renderAutomacao() : renderPerfil();

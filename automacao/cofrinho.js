@@ -192,6 +192,7 @@ function resumoSemanal(st, ag) {
   const avisos = [];
   const ue = ultimoExtrato(st); if (ue && diffDays(ue, ag.date) > 7) avisos.push(`O último extrato da conta vai até ${dCurta(ue)}. Peça o extrato no app do Nubank para atualizar: a automação importa sozinha.`);
   const prov = st.tx.filter(t => t.provisorio); if (prov.length) avisos.push(`${prov.length} compra(s) do Apple Pay aguardando a fatura para confirmar.`);
+  const nr = st.tx.filter(core.precisaRevisao).length; if (nr) avisos.push(`${nr} lançamento(s) esperando você dizer o que são (Gastos → Revisar).`);
   const ns = (st.sugestoes.itens || []).length; if (ns) avisos.push(`${ns} sugestão(ões) esperando sua aprovação no app (Mais → Automação).`);
   sec.push(["Avisos", avisos]);
   return email(`Cofrinho · sua semana: ${fmt(tot)} em gastos`, "Resumo da semana", sec);
@@ -234,6 +235,8 @@ function avisoImportacao(prep, novasSug) {
   if (fat.length) sec.push(["Fatura do cartão", fat.flatMap(f => [[`Fatura que vence ${dCurta(f.venc)}`, fmt(f.total)], ...(f.saldoAbertoTotal ? [["Saldo em aberto total (com parcelas futuras)", fmt(f.saldoAbertoTotal)]] : [])])]);
   if (d.seguro != null) sec.push(["Agora", [["Livre para gastar até o salário", fmt(d.seguro)], ["Saldo em conta", fmt(d.saldo) + (d.saldoData ? ` (${dCurta(d.saldoData)})` : "")]]]);
   if (novasSug.length) sec.push(["Para você aprovar no app (Mais → Automação)", novasSug.map(s => s.texto)]);
+  const novosRev = prep.changes.add.filter(core.precisaRevisao);
+  if (novosRev.length) sec.push(["Para você revisar no app (Gastos → Revisar)", novosRev.slice(0, 8).map(t => `${t.merchant}: ${fmt(t.amount)} (${t.cat})`)]);
   const assunto = novas || subs ? `Cofrinho · ${novas} lançamento(s) importado(s)${subs ? `, ${subs} do Apple Pay confirmado(s)` : ""}${novasSug.length ? ` e ${novasSug.length} sugestão(ões)` : ""}` : `Cofrinho · ${novasSug.length} sugestão(ões) para aprovar`;
   return email(assunto, novas || subs ? "Extrato importado" : "Sugestões para aprovar", novas || subs ? sec : sec.slice(1));
 }

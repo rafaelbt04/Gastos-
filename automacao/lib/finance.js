@@ -97,7 +97,7 @@ function occurrences(st, ym) {
   const out = [];
   for (const f of st.fixas || []) { const o = fixaOcc(f, ym); if (o) out.push(o); }
   for (const s of st.assinaturas || []) { const o = subOcc(s, ym); if (o) out.push(o); }
-  for (const p of st.parcelas || []) { const o = parcOcc(p, ym); if (o) out.push(o); }
+  for (const p of st.parcelas || []) { if (parcelaCancelada(st, p)) continue; const o = parcOcc(p, ym); if (o) out.push(o); }
   return out.sort((a, b) => a.date.localeCompare(b.date));
 }
 
@@ -122,6 +122,7 @@ function reconcile(st, ym, today) {
     let best = null, bestScore = -1;
     for (const t of txs) {
       if (used.has(t.id) || !nameHit(o, t)) continue;
+      if (o.tipo === "assinatura" && t.source !== "cartao") continue;
       const v = -t.amount;
       if (!amountOk(o, v)) continue;
       let score = 1 - Math.abs(v - o.valor) / Math.max(o.valor, 1);
@@ -347,7 +348,7 @@ function projecao(st, today, n = 6) {
     const assin = r2(sum(occ.filter(o => o.tipo === "assinatura"), o => o.valor));
     const parc = r2(sum(occ.filter(o => o.tipo === "parcela"), o => o.valor));
     const comp = r2(fixas + assin + parc);
-    const terminam = (st.parcelas || []).filter(p => { const k = parcelaNum(p, m); return k === +p.n; }).map(p => ({ desc: p.desc, libera: parcelaValor(p, +p.n - 1 > 0 ? +p.n - 1 : +p.n) }));
+    const terminam = (st.parcelas || []).filter(p => { if (parcelaCancelada(st, p)) return false; const k = parcelaNum(p, m); return k === +p.n; }).map(p => ({ desc: p.desc, libera: parcelaValor(p, +p.n - 1 > 0 ? +p.n - 1 : +p.n) }));
     out.push({ m, renda, fixas, assin, parc, comp, varEst: r2(media.ess + media.lazer), livre: r2(renda - comp - media.ess - media.lazer), pct: renda > 0 ? comp / renda * 100 : null, terminam });
   }
   return { meses: out, media };
@@ -355,6 +356,7 @@ function projecao(st, today, n = 6) {
 
 // ---------- parcelas: resumo ----------
 function parcelaResumo(st, p, today) {
+  if (parcelaCancelada(st, p)) { const total = +p.total > 0 ? +p.total : r2(parcelaValor(p, 1) * +p.n); return { pagas: 0, restantes: 0, pago: 0, falta: 0, total, mensal: 0, fimYM: ymOf(p.proxima), kNow: 0, ativa: false, cancelada: true, estornada: !!(p.chave && estornoCobre(st, p.chave)), proxima: null, proxK: 0 }; }
   // pagas = as declaradas antes da próxima (atual - 1) + as que já venceram desde então
   const ym = ymOf(today), n = +p.n, pym = ymOf(p.proxima);
   const passou = monthsBetween(pym, ym) + (dateIn(ym, +p.proxima.slice(8)) <= today ? 1 : 0);
@@ -379,25 +381,40 @@ function sugestoes(st) {
     const a = norm(x.nome || x.desc || ""), m = norm(nome);
     return a.length >= 4 && (m.includes(a) || a.includes(m) || a.split(" ").filter(w => w.length >= 5).some(w => m.includes(w)));
   });
+  const rec = new Set(((st.sugestoes || {}).rejeitadas) || []), recusada = id => rec.has(id);
   const byKey = {};
   for (const t of (st.tx || []).filter(t => t.kind === "gasto" && t.amount < 0)) (byKey[t.key] ||= []).push(t);
   for (const [k, list] of Object.entries(byKey)) {
     const parc = list.map(t => [t, /parcela\s*(\d+)\s*\/\s*(\d+)/i.exec(t.memo || "")]).filter(x => x[1]);
     if (parc.length) {
       const [t, m] = parc.sort((a, b) => b[0].date.localeCompare(a[0].date))[0];
-      if (!has(t.merchant, k)) out.parcelas.push({ desc: t.merchant, chave: k, valorParcela: -t.amount, n: +m[2], atual: +m[1], proxima: t.date, total: r2(-t.amount * +m[2]), cat: t.cat, pagamento: t.source === "cartao" ? "cartao" : "conta" });
+      if (!has(t.merchant, k) && !recusada("parc:" + k) && +m[1] < +m[2] && !estornoCobre(st, k)) out.parcelas.push({ desc: t.merchant, chave: k, valorParcela: -t.amount, n: +m[2], atual: +m[1], proxima: t.date, total: r2(-t.amount * +m[2]), cat: t.cat, pagamento: t.source === "cartao" ? "cartao" : "conta" });
       continue;
     }
     const meses = new Set(list.map(t => t.date.slice(0, 7)));
     const vals = list.map(t => -t.amount), avg = sum(vals) / vals.length;
     const estavel = vals.every(v => Math.abs(v - avg) <= Math.max(2, avg * 0.1));
-    if ((list[0].cat === "Apps e assinaturas" || (meses.size >= 2 && estavel && list.length === meses.size)) && !has(list[0].merchant, k)) {
+    // assinatura: SEMPRE no crédito, e só se for recorrente (2+ meses, mesmo valor) ou um serviço de assinatura conhecido
+    const noCredito = list.every(t => t.source === "cartao" && !t.provisorio);
+    const conhecido = SERVICOS_ASSINATURA.test(norm(list[0].merchant));
+    if (noCredito && ((meses.size >= 2 && estavel && list.length === meses.size) || conhecido) && !has(list[0].merchant, k) && !recusada("sub:" + k)) {
       const last = list.slice().sort((a, b) => b.date.localeCompare(a.date))[0];
       out.assinaturas.push({ nome: last.merchant, chave: k, valor: -last.amount, freq: "mensal", proxima: dateIn(addMonths(ymOf(last.date), 1), +last.date.slice(8)), cat: last.cat, pagamento: last.source === "cartao" ? "cartao" : "conta", visto: meses.size });
     }
   }
   return out;
 }
+
+const SERVICOS_ASSINATURA = /netflix|spotify|deezer|disney|hbo|\bmax\b|prime video|amazon prime|youtube|google one|icloud|apple com bill|apple\.com|globoplay|paramount|crunchyroll|claude|anthropic|openai|chatgpt|canva|adobe|microsoft|office 365|xbox|playstation|psn|nintendo|smart ?fit|bluefit|academia|duolingo|notion|dropbox|kindle|audible|ifood club|uber one|tinder|linkedin/;
+
+// O estorno devolveu tudo o que já foi cobrado dessa compra parcelada? Então ela foi cancelada.
+function estornoCobre(st, chave) {
+  const tx = (st.tx || []).filter(t => t.key === chave && t.source === "cartao" && t.kind === "gasto");
+  const estornos = sum(tx.filter(t => t.amount > 0), t => t.amount);
+  const cobrado = -sum(tx.filter(t => t.amount < 0), t => t.amount);
+  return estornos > 0 && estornos >= cobrado - 0.01;
+}
+function parcelaCancelada(st, p) { return (p.status && p.status !== "ativa") || (p.chave && estornoCobre(st, p.chave)); }
 
 // ---------- assinaturas: oportunidades ----------
 function oportunidades(st, today) {
@@ -488,4 +505,4 @@ function simGuardarAteFimAno(st, today) {
   return { meses: pr.meses.map(m => m.m), plan: r2(plan + atual), realista: r2(realista + atual), atual: r2(atual), base: pr.media.base };
 }
 
-if (typeof module !== "undefined") module.exports = { faturaDaData, caixinhasSaldo, isSalaryTx, salarioInfo, salarioRecebidoMes, sugestoes, BUCKETS, DEFAULT_GROUP, FREQ, perfilOf, groupOf, subOcc, parcOcc, fixaOcc, occurrences, reconcile, realizado, rendaPlan, rendaReal, compromissos, plano, faturaCiclos, disponivel, projecao, parcelaResumo, oportunidades, recomendacoes, simInvestirMais, simCancelar, simNovaParcela, simGuardarAteFimAno, assinaturasMensalEquiv, addMonths, monthsBetween, dateIn, mediaVariavel, proximoSalario, salarioRecebido, parcelaValor, parcelaNum };
+if (typeof module !== "undefined") module.exports = { parcelaCancelada, estornoCobre, faturaDaData, caixinhasSaldo, isSalaryTx, salarioInfo, salarioRecebidoMes, sugestoes, BUCKETS, DEFAULT_GROUP, FREQ, perfilOf, groupOf, subOcc, parcOcc, fixaOcc, occurrences, reconcile, realizado, rendaPlan, rendaReal, compromissos, plano, faturaCiclos, disponivel, projecao, parcelaResumo, oportunidades, recomendacoes, simInvestirMais, simCancelar, simNovaParcela, simGuardarAteFimAno, assinaturasMensalEquiv, addMonths, monthsBetween, dateIn, mediaVariavel, proximoSalario, salarioRecebido, parcelaValor, parcelaNum };

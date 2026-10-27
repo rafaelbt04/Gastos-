@@ -38,8 +38,8 @@ const KEYWORDS = [
   [/conveniencia|oxxo|est comercial|\bmercado\b|minimercado|supermerc|carrefour|pao de acucar|atacad|assai|hortifruti/, "Conveniência e mercado"],
   [/\bvlt\b|uber|\b99\b|onibus|metro|posto|combust|estaciona|sem parar|veloe|emtu|renovias|pedagio|autoban|conectcar|ccr /, "Transporte"],
   [/sport|academia|smart ?fit|cinema|ingresso|teatro/, "Esporte e lazer"],
-  [/bytedance|netflix|spotify|apple|google|prime video|disney|hbo|youtube|icloud|chatgpt|openai|anthropic|claude/, "Apps e assinaturas"],
-  [/appmax|aspen|jim com|mercadolivre|mercado livre|shopee|amazon|magalu|aliexpress|shein|kabum|pagseguro|paypal/, "Compras online"],
+  [/netflix|spotify|apple|google|prime video|disney|hbo|youtube|icloud|chatgpt|openai|anthropic|claude/, "Apps e assinaturas"],
+  [/bytedance|tiktok|appmax|jim com|mercadolivre|mercado livre|shopee|amazon|magalu|aliexpress|shein|kabum|pagseguro|paypal/, "Compras online"],
   [/farmacia|drogaria|droga|raia|pacheco|drogal|clinica|hospital|laborat/, "Saúde"],
   [/puc|faculdade|livraria|curso|udemy|alura/, "Educação"],
   [/cpfl|sanasa|vivo|claro|tim\b|net\b|aluguel|condominio|energia|agua/, "Casa e contas"]
@@ -54,7 +54,9 @@ function classify(row, rules, settings) {
   const base = { merchant: titleCase(merchant), key };
   if (/^(aplicacao|resgate) rdb/.test(nm)) return { ...base, merchant: "Caixinha", key: "caixinha", kind: "caixinha", cat: "Caixinha" };
   if (/^(aplicacao|resgate) /.test(nm)) return { ...base, kind: "investimento", cat: "Carteira" };
-  if (rules && rules[key]) return { ...base, kind: rules[key].kind, cat: rules[key].cat };
+  // regra por direção (o que entra e o que sai de uma mesma pessoa podem ser coisas diferentes); senão, a regra geral da loja
+  const rule = rules && (rules[key + (row.amount > 0 ? "|+" : "|-")] || rules[key]);
+  if (rule) return { ...base, kind: rule.kind, cat: rule.cat };
   if (row.amount > 0 && row.source !== "cartao" && ((settings && settings.salarioFontes) || []).some(f => f && norm(merchant + " " + memo).includes(f))) return { ...base, kind: "entrada", cat: "Salário" };
   if (/pagamento (de|da) fatura|pagamento recebido/.test(nm)) return { ...base, merchant: "Fatura do cartão", kind: "interna", cat: "Fatura do cartão" };
   const own = ((settings && settings.ownNames) || []).map(norm);
@@ -257,6 +259,15 @@ function cardKey(t) {
 function parcelaKN(t) { const m = /parcela\s*(\d+)\s*\/\s*(\d+)/i.exec(t.memo || ""); return m ? m[1] + "/" + m[2] : ""; }
 const daysDiff = (a, b) => Math.round((new Date(b + "T12:00:00") - new Date(a + "T12:00:00")) / 864e5);
 
+// ===== lançamentos que pedem confirmação do usuário =====
+// Gasto sem categoria clara, Pix para/de pessoas (pode ser gasto, repasse ou reembolso) e entradas genéricas.
+function precisaRevisao(t) {
+  if (t.manual || t.revisado || t.provisorio) return false;
+  if (t.kind === "gasto" && (t.cat === "Outros gastos" || t.cat === "Pix para pessoas")) return true;
+  if (t.kind === "entrada" && (t.cat === "Pix recebido" || t.cat === "Outras entradas")) return true;
+  return false;
+}
+
 // ===== junção de uma importação com o que já existe (usada pelo app e pela automação) =====
 // Evita duplicar: mesmo id; mesmo lançamento da conta vindo em PDF/OFX/CSV (data+valor+descrição);
 // mesma compra do cartão vinda em CSV e em PDF (fatura+loja+parcela+valor, com tolerância de 2 centavos).
@@ -299,4 +310,4 @@ function parseStatement(name, text) {
   return parseCSV(text, name);
 }
 
-if (typeof module !== "undefined") module.exports = { parseNubankFaturaPDF, cardKey, parcelaKN, mergeImport, parseMoneyBR, parseOFX, parseCSV, parseNubankPDF, txSig, classify, parseStatement, mkey, norm, KINDS, CATS_GASTO, CATS_ENTRADA };
+if (typeof module !== "undefined") module.exports = { precisaRevisao, parseNubankFaturaPDF, cardKey, parcelaKN, mergeImport, parseMoneyBR, parseOFX, parseCSV, parseNubankPDF, txSig, classify, parseStatement, mkey, norm, KINDS, CATS_GASTO, CATS_ENTRADA };
