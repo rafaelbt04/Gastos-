@@ -281,7 +281,7 @@ function finalizar() {
   }
   const sg = F.sugestoes(st);
   for (const a of sg.assinaturas.filter(a => a.visto >= 2 || a.cat === "Apps e assinaturas")) push({ id: "sub:" + a.chave, tipo: "assinatura", dados: a, texto: `Assinatura: ${a.nome}, ${fmt(a.valor)} por mês` });
-  for (const p of sg.parcelas) push({ id: "parc:" + p.chave, tipo: "parcela", dados: p, texto: `Parcelamento: ${p.desc}, ${p.atual}/${p.n} de ${fmt(p.valorParcela)}` });
+  for (const p of sg.parcelas.filter(p => +p.atual < +p.n)) push({ id: "parc:" + p.chave, tipo: "parcela", dados: p, texto: `Parcelamento: ${p.desc}, ${p.atual}/${p.n} de ${fmt(p.valorParcela)}` });
   // remove sugestões que já foram resolvidas por outro caminho
   sug.itens = sug.itens.filter(s => s.tipo !== "categoria" || !st.rules[s.key]);
   const sugMudou = JSON.stringify(sug) !== JSON.stringify(st.sugestoes || { itens: [], rejeitadas: [] });
