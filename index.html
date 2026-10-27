@@ -14,7 +14,29 @@
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="icon" type="image/png" href="icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<!-- fontes sem travar a abertura: se o Google Fonts estiver lento ou bloqueado, o app abre com a fonte do sistema -->
+<link rel="stylesheet" media="print" onload="this.media='all'" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<script>
+// se algo der errado ao abrir, mostra o motivo na tela e um botão para recomeçar (em vez de tela em branco)
+(function () {
+  var shown = false;
+  function show(msg) {
+    if (shown) return; shown = true;
+    var go = function () {
+      var d = document.createElement("div");
+      d.setAttribute("style", "position:fixed;left:12px;right:12px;bottom:calc(env(safe-area-inset-bottom) + 90px);z-index:9999;background:#fff;color:#13201A;border:1px solid #DFE5E1;border-radius:14px;padding:14px;font:14px/1.4 -apple-system,system-ui,sans-serif;box-shadow:0 8px 30px rgba(0,0,0,.18)");
+      d.innerHTML = "<b>O Cofrinho teve um problema ao abrir.</b><div style='margin:6px 0 10px;color:#5D6B64;font-size:12px;word-break:break-word'></div><a href='reset.html' style='display:inline-block;background:#0E6B4F;color:#fff;border-radius:10px;padding:8px 12px;text-decoration:none;font-weight:600'>Recomeçar o app</a> <button style='margin-left:6px;border:1px solid #DFE5E1;background:#fff;border-radius:10px;padding:8px 12px'>Fechar</button>";
+      d.querySelector("div").textContent = String(msg).slice(0, 300);
+      d.querySelector("button").onclick = function () { d.remove(); shown = false; };
+      document.body.appendChild(d);
+    };
+    document.body ? go() : document.addEventListener("DOMContentLoaded", go);
+  }
+  window.__cofrinhoErro = show;
+  window.addEventListener("error", function (e) { if (e && e.message) show(e.message + (e.lineno ? " (linha " + e.lineno + ")" : "")); });
+  window.addEventListener("unhandledrejection", function (e) { var r = e && e.reason; if (r && /supabase|fetch|network|load failed/i.test(String(r.message || r))) return; show("Erro: " + (r && r.message || r)); });
+})();
+</script>
 <style>
 /* Layout: app de bolso com barra de abas embaixo. Cabeçalho fixo com o mês; cada aba é uma coluna única que vira grade de 2 colunas no computador. */
 :root {
@@ -2128,7 +2150,7 @@ function openRevisar(t) {
   s.querySelector("#rvKeep").onclick = () => { t.revisado = true; t.manual = true; markTx([t]); close(); persist(); render(); toast("Mantido como está"); };
 }
 
-const APP_VERSION = "13";
+const APP_VERSION = "14";
 // ===== utilidades =====
 const fmt = v => (v < -0.004 ? "−" : "") + "R$ " + Math.abs(v).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmt0 = v => (v < -0.5 ? "−" : "") + "R$ " + Math.abs(v).toLocaleString("pt-BR", { maximumFractionDigits: 0 });

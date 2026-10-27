@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cofrinho — recomeçar</title>
+<style>
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #EEF2EF; color: #13201A; font: 16px/1.5 -apple-system, system-ui, sans-serif; padding: 16px; box-sizing: border-box; }
+  @media (prefers-color-scheme: dark) { body { background: #0E1411; color: #E8EFEB; } }
+  main { max-width: 360px; text-align: center; }
+  p { color: #5D6B64; font-size: 14px; }
+  a { display: inline-block; margin-top: 8px; background: #0E6B4F; color: #fff; border-radius: 12px; padding: 10px 16px; text-decoration: none; font-weight: 600; }
+</style>
+</head>
+<body>
+<main>
+  <h1 style="font-size:20px">Recomeçando o Cofrinho…</h1>
+  <p id="msg">Apagando a cópia antiga do app guardada no aparelho. Seus dados estão na nuvem e o login continua salvo.</p>
+  <a href="./" id="go" hidden>Abrir o Cofrinho</a>
+</main>
+<script>
+(async function () {
+  try { if (navigator.serviceWorker) { const rs = await navigator.serviceWorker.getRegistrations(); await Promise.all(rs.map(r => r.unregister())); } } catch (e) { }
+  try { if (window.caches) { const ks = await caches.keys(); await Promise.all(ks.map(k => caches.delete(k))); } } catch (e) { }
+  document.getElementById("msg").textContent = "Pronto. Abrindo a versão mais nova…";
+  document.getElementById("go").hidden = false;
+  setTimeout(() => location.replace("./?r=" + Date.now()), 800);
+})();
+</script>
+</body>
+</html>
