@@ -14,7 +14,7 @@ Regras gerais:
 ## 0. Preparar a pasta
 ```bash
 W=/home/claude/cofrinho-execucao; rm -rf "$W"; mkdir -p "$W/anexos"; cd "$W"
-git clone --depth 1 https://github.com/rafaelbt04/gastos- repo
+git clone --depth 1 https://github.com/rafaelbt04/Gastos-.git repo
 R="$W/repo/automacao"; node --version
 ```
 
