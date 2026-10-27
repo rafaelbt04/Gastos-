@@ -345,6 +345,11 @@ select, input[type=number], input[type=text], input[type=password], input[type=d
 .fat { background: var(--surface-2); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px }
 .fat .fh { display: flex; justify-content: space-between; gap: 8px; align-items: center; flex-wrap: wrap; font-size: .9rem }
 .fat .rows { font-size: .84rem }
+
+.badge.b3 { color: var(--s7) }
+.tokbox { display: grid; gap: 6px; background: var(--surface-2); border-radius: 12px; padding: 12px }
+.tokbox code { font-family: var(--mono); font-size: .78rem; word-break: break-all; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 8px; user-select: all; -webkit-user-select: all }
+.tokbox .btn { justify-self: start }
 </style>
 </head>
 <body>
@@ -423,6 +428,7 @@ select, input[type=number], input[type=text], input[type=password], input[type=d
     <section class="tab" id="tab-mais" role="tabpanel" hidden>
       <div class="segtabs" id="seg-mais" role="tablist"></div>
       <div class="tab two" id="sub-mais-perfil"><div id="mPerfil" style="display:contents"></div></div>
+      <div class="tab two" id="sub-mais-automacao" hidden><div id="mAuto" style="display:contents"></div></div>
       <div class="tab two" id="sub-mais-carteira" hidden>
       <div class="card" id="cardWallet"></div>
       <div class="card" id="cardAportes"></div>
@@ -683,6 +689,94 @@ function parseNubankPDF(pages) {
   if (saldo != null && fim) rows.saldo = { valor: saldo, data: fim };
   return rows;
 }
+// ===== fatura do cartão em PDF (e-mail "A fatura do seu cartão Nubank está fechada") =====
+function parseNubankFaturaPDF(pages, name) {
+  const MONEY = /^([−-])?\s?R\$\s?(\d{1,3}(?:\.\d{3})*,\d{2})$/, DM = /^(\d{2}) ([A-Z]{3})$/;
+  const num = s => parseFloat(s.replace(/\./g, "").replace(",", "."));
+  const lines = [];
+  for (const items of pages) {
+    const ls = [];
+    for (const it of items.slice().sort((a, b) => b.y - a.y || a.x - b.x)) { const l = ls.find(L => Math.abs(L.y - it.y) <= 2); l ? l.items.push(it) : ls.push({ y: it.y, items: [it] }); }
+    for (const L of ls) { L.items.sort((a, b) => a.x - b.x); L.parts = L.items.map(i => i.s.trim()).filter(Boolean); L.txt = L.parts.join(" "); }
+    ls.sort((a, b) => b.y - a.y); lines.push(...ls);
+  }
+  const all = lines.map(l => l.txt).join("\n");
+  const mv = /Data de vencimento:\s*(\d{2}) ([A-Z]{3}) (\d{4})/.exec(all) || /FATURA (\d{2}) ([A-Z]{3}) (\d{4})/.exec(all);
+  if (!mv || !MESES_PT[mv[2]]) return [];
+  const vencPdf = `${mv[3]}-${MESES_PT[mv[2]]}-${mv[1]}`;
+  const venc = (/(\d{4}-\d{2}-\d{2})/.exec(name || "") || [])[1] || vencPdf;
+  const vy = +mv[3], vm = +MESES_PT[mv[2]];
+  const yearFor = mon => (+mon > vm ? vy - 1 : vy);
+  const moneyOf = s => { const m = MONEY.exec(s.replace(/\s+/g, " ").trim()); return m ? (m[1] ? -1 : 1) * num(m[2]) : null; };
+  const meta = { venc, vencPdf };
+  const grab = (re) => { const m = re.exec(all); return m ? num(m[1]) : null; };
+  meta.total = grab(/no valor de\s*R\$\s?([\d.]+,\d{2})/) ?? grab(/Pagamento total da fatura\s*R\$\s?([\d.]+,\d{2})/);
+  meta.saldoAbertoTotal = grab(/Saldo em aberto total\s*R\$\s?([\d.]+,\d{2})/);
+  meta.saldoProxima = grab(/Saldo em aberto da próxima fatura\s*R\$\s?([\d.]+,\d{2})/);
+  meta.limiteTotal = grab(/Limite total do cartão de crédito:\s*R\$\s?([\d.]+,\d{2})/);
+  const out = []; let inTx = false, pag = false; const seen = {};
+  for (const L of lines) {
+    if (/^TRANSAÇÕES/.test(L.parts[0] || "")) { inTx = true; pag = false; continue; }
+    if (!inTx) continue;
+    if (/^Pagamentos$/i.test(L.parts[0] || "")) { pag = true; continue; }
+    if (/^(Em cumprimento|Como assegurado|Nu Pagamentos)/.test(L.parts[0] || "")) { inTx = false; continue; }
+    const d = DM.exec(L.parts[0] || ""); if (!d || !MESES_PT[d[2]]) continue;
+    const valor = moneyOf(L.parts[L.parts.length - 1] || ""); if (valor == null) continue;
+    let mid = L.parts.slice(1, -1).filter(p => !/^•+\s?\d{4}$/.test(p));
+    let memo = mid.join(" ").trim();
+    if (pag || /^Pagamento em /i.test(memo)) memo = "Pagamento recebido";
+    const date = `${yearFor(MESES_PT[d[2]])}-${MESES_PT[d[2]]}-${d[1]}`;
+    const amount = Math.round(-valor * 100) / 100; // compra (R$ +) vira gasto negativo; crédito/estorno (−R$) vira positivo
+    const base = "fp-" + mkey(venc + date + memo + amount).slice(0, 70);
+    seen[base] = (seen[base] || 0) + 1;
+    out.push({ id: base + "-" + seen[base], date, amount, memo, source: "cartao", fatura: venc });
+  }
+  out.meta = meta;
+  return out;
+}
+
+// chave da loja num lançamento de cartão, sem "Parcela k/n" nem "Estorno de compra (...)"
+function cardKey(t) {
+  const m = String(t.memo || "").replace(/\s*-\s*parcela\s*\d+\s*\/\s*\d+\s*$/i, "").replace(/^Estorno de compra \((.+)\)$/i, "$1");
+  return norm(m).replace(/ /g, "").slice(0, 10);
+}
+function parcelaKN(t) { const m = /parcela\s*(\d+)\s*\/\s*(\d+)/i.exec(t.memo || ""); return m ? m[1] + "/" + m[2] : ""; }
+const daysDiff = (a, b) => Math.round((new Date(b + "T12:00:00") - new Date(a + "T12:00:00")) / 864e5);
+
+// ===== junção de uma importação com o que já existe (usada pelo app e pela automação) =====
+// Evita duplicar: mesmo id; mesmo lançamento da conta vindo em PDF/OFX/CSV (data+valor+descrição);
+// mesma compra do cartão vinda em CSV e em PDF (fatura+loja+parcela+valor, com tolerância de 2 centavos).
+// Compras provisórias do Apple Pay são substituídas pela compra real da fatura (valor igual, até 3 dias de diferença).
+function mergeImport(existing, rows, rules, settings) {
+  const res = { add: [], update: [], remove: [], novas: 0, repetidas: 0, substituidas: 0 };
+  const byId = new Map(existing.map(t => [t.id, t]));
+  const sigs = new Map();
+  for (const t of existing) if (t.source === "conta") { const k = txSig(t); sigs.set(k, (sigs.get(k) || 0) + 1); }
+  const cardPool = existing.filter(t => t.source === "cartao" && !t.provisorio);
+  const usedCard = new Set();
+  const prov = existing.filter(t => t.provisorio);
+  const usedProv = new Set();
+  for (const r of rows) {
+    if (!r.id) r.id = "m-" + mkey(r.date + r.memo + r.amount);
+    const ex = byId.get(r.id);
+    if (ex) { if (r.fatura && ex.fatura !== r.fatura) { ex.fatura = r.fatura; res.update.push(ex); } res.repetidas++; continue; }
+    if (r.source === "conta") { const k = txSig(r), n = sigs.get(k) || 0; if (n > 0) { sigs.set(k, n - 1); res.repetidas++; continue; } }
+    if (r.source === "cartao") {
+      const ck = cardKey(r), kn = parcelaKN(r), cents = Math.round(r.amount * 100);
+      const hit = cardPool.find(t => !usedCard.has(t.id) && Math.abs(Math.round(t.amount * 100) - cents) <= 2 && cardKey(t) === ck && parcelaKN(t) === kn &&
+        (t.fatura && r.fatura ? Math.abs(daysDiff(t.fatura, r.fatura)) <= 5 : Math.abs(daysDiff(t.date, r.date)) <= 3));
+      if (hit) { usedCard.add(hit.id); if (r.fatura && hit.fatura !== r.fatura) { hit.fatura = r.fatura; res.update.push(hit); } res.repetidas++; continue; }
+    }
+    const nt = { ...r, ...classify(r, rules, settings), manual: false };
+    if (r.source === "cartao" && r.amount < 0) {
+      const p = prov.find(t => !usedProv.has(t.id) && Math.abs(Math.round(t.amount * 100) - Math.round(r.amount * 100)) <= 1 && Math.abs(daysDiff(t.date, r.date)) <= 3);
+      if (p) { usedProv.add(p.id); res.remove.push(p); res.substituidas++; if (p.manual) { nt.kind = p.kind; nt.cat = p.cat; nt.manual = true; } }
+    }
+    res.add.push(nt); res.novas++;
+  }
+  return res;
+}
+
 // assinatura para achar o mesmo lançamento vindo de formatos diferentes (OFX × PDF)
 function txSig(t) { return t.date + "|" + Math.round(t.amount * 100) + "|" + norm(t.memo).replace(/ /g, "").slice(0, 20); }
 
@@ -691,7 +785,7 @@ function parseStatement(name, text) {
   return parseCSV(text, name);
 }
 
-if (typeof module !== "undefined") module.exports = { parseNubankPDF, txSig, classify, parseStatement, mkey, norm, KINDS, CATS_GASTO, CATS_ENTRADA };
+if (typeof module !== "undefined") module.exports = { parseNubankFaturaPDF, cardKey, parcelaKN, mergeImport, parseMoneyBR, parseOFX, parseCSV, parseNubankPDF, txSig, classify, parseStatement, mkey, norm, KINDS, CATS_GASTO, CATS_ENTRADA };
 
 </script>
 <script>
@@ -699,10 +793,10 @@ const KEY = "caderno-gastos-cache-v2";
 const CFG = window.CADERNO_CONFIG || {};
 const sb = (window.supabase && CFG.url) ? window.supabase.createClient(CFG.url, CFG.key, { auth: { persistSession: true, autoRefreshToken: true, storageKey: "caderno-gastos-auth" } }) : null;
 
-const CFG_KEYS = ["rules", "budgets", "settings", "wallet", "imports", "perfil", "assinaturas", "parcelas", "fixas"];
-const blankData = () => ({ tx: [], rules: {}, budgets: {}, settings: { ownNames: [] }, wallet: null, imports: [], perfil: {}, assinaturas: [], parcelas: [], fixas: [] });
+const CFG_KEYS = ["rules", "budgets", "settings", "wallet", "imports", "perfil", "assinaturas", "parcelas", "fixas", "sugestoes", "automacao", "faturas"];
+const blankData = () => ({ tx: [], rules: {}, budgets: {}, settings: { ownNames: [] }, wallet: null, imports: [], perfil: {}, assinaturas: [], parcelas: [], fixas: [], sugestoes: { itens: [], rejeitadas: [] }, automacao: null, faturas: {} });
 const state = { ...blankData(), month: null, filter: "todos", query: "", catFilter: null, tab: "inicio", sub: {}, user: null };
-const dirty = { tx: new Map(), cfg: new Set() };
+const dirty = { tx: new Map(), cfg: new Set(), del: new Set() };
 
 // ===== armazenamento: nuvem (Supabase) + cópia no aparelho para abrir rápido e offline =====
 function cacheKey() { return KEY + ":" + (state.user ? state.user.id : "anon"); }
@@ -717,6 +811,7 @@ function saveCache() {
 }
 function markTx(list) { for (const t of list) dirty.tx.set(t.id, t); }
 function markCfg(...names) { for (const n of names) dirty.cfg.add(n); }
+function markDel(list) { for (const t of list) { dirty.del.add(t.id); dirty.tx.delete(t.id); } }
 
 let syncing = false;
 async function persist() {
@@ -724,6 +819,12 @@ async function persist() {
   if (!sb || !state.user || syncing) return;
   syncing = true;
   try {
+    if (dirty.del.size) {
+      const ids = [...dirty.del];
+      const { error } = await sb.from("registros").delete().eq("user_id", state.user.id).eq("tipo", "tx").in("id", ids);
+      if (error) throw error;
+      for (const id of ids) dirty.del.delete(id);
+    }
     while (dirty.tx.size || dirty.cfg.size) {
       const rows = [];
       for (const [id, t] of [...dirty.tx].slice(0, 500)) { const { id: _, ...dados } = t; rows.push({ user_id: state.user.id, tipo: "tx", id, dados }); dirty.tx.delete(id); }
@@ -750,7 +851,7 @@ async function pull() {
   for (const r of all) r.tipo === "tx" ? tx.push({ id: r.id, ...r.dados }) : (cfg[r.id] = r.dados.valor);
   // mantém o que ainda não subiu
   for (const t of dirty.tx.values()) { const i = tx.findIndex(x => x.id === t.id); i >= 0 ? (tx[i] = t) : tx.push(t); }
-  state.tx = tx;
+  state.tx = tx.filter(t => !dirty.del.has(t.id));
   for (const n of CFG_KEYS) if (!dirty.cfg.has(n) && n in cfg) state[n] = cfg[n];
   { const b = blankData(); for (const k of CFG_KEYS) if (state[k] == null) state[k] = b[k]; }
   if (typeof aplicarSalario === "function" && aplicarSalario()) persist();
@@ -1596,7 +1697,8 @@ function renderInicio() {
     : `<p class="hint">Nada previsto. Cadastre contas fixas, assinaturas e parcelas na aba Contas para ver o que vem por aí.</p>`);
 
   // recomendações
-  $("aRecs").innerHTML = `<div class="card-head"><h2>O que o app sugere</h2><button class="btn ghost small" data-go="dicas">Ver todas (${recs.length})</button></div><div class="alerts">${recs.slice(0, 4).map(recItem).join("")}</div>`;
+  const pendAuto = (state.sugestoes && state.sugestoes.itens || []).length;
+  $("aRecs").innerHTML = (pendAuto ? `<button class="alert info" data-go="automacao" style="border:0;text-align:left;width:100%;cursor:pointer"><span class="ic">${pendAuto}</span><div><b>${pendAuto === 1 ? "1 sugestão" : pendAuto + " sugestões"} da automação para aprovar</b><br><span class="hint">categorias, assinaturas ou parcelas encontradas nos extratos →</span></div></button>` : "") + `<div class="card-head"><h2>O que o app sugere</h2><button class="btn ghost small" data-go="dicas">Ver todas (${recs.length})</button></div><div class="alerts">${recs.slice(0, 4).map(recItem).join("")}</div>`;
 }
 function stackSeg(v, tot, c) { return v > 0 && tot > 0 ? `<i style="width:${Math.min(100, v / tot * 100).toFixed(2)}%;background:${c}"></i>` : ""; }
 function recItem(r) { const [cls, ic] = LVL[r.nivel]; return `<div class="alert ${cls}"><span class="ic">${ic}</span><div><div>${esc(r.titulo)}</div><details class="why"><summary>Por quê?</summary><p>${esc(r.porque)}</p></details>${r.acao ? `<button class="linkbtn" data-go="${r.acao}">${{ perfil: "Ajustar renda e saldos", assinaturas: "Ver assinaturas", parcelas: "Ver parcelas", limites: "Ver tetos", plano: "Ver plano", importar: "Importar extrato" }[r.acao] || "Abrir"} →</button>` : ""}</div></div>`; }
@@ -1795,7 +1897,8 @@ function faturasHtml(fc) {
       <div class="rows"><span>${f.importada ? "Compras da fatura importada" : `Compras (${dCurta(f.prevClose)} a ${dCurta(addDays(f.close, -1))})`}</span><span>${fmt(f.compras)}</span>
       ${f.estornos ? `<span>− Estornos e créditos</span><span>${fmt(f.estornos)}</span>` : ""}
       ${f.previsto ? `<span>+ Previsto (assinaturas e parcelas ainda não lançadas)</span><span>${fmt(f.previsto)}</span>` : ""}
-      <span><b>Total</b></span><span><b>${fmt(f.total)}</b></span></div></div>`;
+      <span><b>Total</b></span><span><b>${fmt(f.total)}</b></span>
+      ${state.faturas && state.faturas[f.venc] && state.faturas[f.venc].total != null ? `<span>Valor informado pelo Nubank</span><span>${fmt(state.faturas[f.venc].total)}</span>` : ""}</div></div>`;
   };
   return `<div class="fats">${[[fc.anterior, "Anterior"], [fc.atual, "Atual"], [fc.proximo, "Próxima"]].filter(([f], i) => i === 1 || f.total || f.itens).map(([f, n]) => one(f, n)).join("")}</div>
     <span class="hint">Faturas importadas em CSV usam o vencimento do arquivo (Nubank_AAAA-MM-DD.csv), como no app do banco.</span>`;
@@ -1837,7 +1940,99 @@ function renderPerfil() {
   for (const s of document.querySelectorAll("[data-grp]")) s.onchange = () => { const g = { ...(state.perfil?.grupos || {}) }; g[s.dataset.grp] = s.value; setPerfil({ grupos: g }); persist(); toast("Grupo atualizado"); };
 }
 
-const APP_VERSION = "10";
+// ---------------- AUTOMAÇÃO ----------------
+const FN_APPLE_PAY = "https://sioknufcvpssadjbpwro.supabase.co/functions/v1/apple-pay";
+let atalhoToken = null, atalhoCarregando = false, atalhoTentou = false;
+async function carregarToken(novo) {
+  if (!sb || !state.user) return null;
+  atalhoCarregando = true; atalhoTentou = true;
+  try {
+    if (novo) await sb.from("atalho_tokens").delete().eq("user_id", state.user.id);
+    let { data } = await sb.from("atalho_tokens").select("token").eq("user_id", state.user.id).limit(1);
+    if (!data || !data.length) { const r = await sb.from("atalho_tokens").insert({ user_id: state.user.id }).select("token"); data = r.data; }
+    atalhoToken = data && data[0] ? data[0].token : null;
+  } catch (e) { atalhoToken = null; }
+  atalhoCarregando = false;
+  return atalhoToken;
+}
+function tempoAtras(iso) {
+  const min = Math.round((Date.now() - new Date(iso)) / 60000);
+  if (min < 2) return "agora há pouco"; if (min < 60) return `há ${min} min`;
+  const h = Math.round(min / 60); if (h < 24) return `há ${h} h`;
+  const d = Math.round(h / 24); return `há ${d} dia${d === 1 ? "" : "s"}`;
+}
+function proximaVerificacao() {
+  const agora = new Date(), sp = new Date(agora.toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
+  const h = sp.getHours() + sp.getMinutes() / 60;
+  const prox = [7, 15, 23].find(x => x + 0.25 > h);
+  return prox != null ? `hoje por volta das ${prox}h` : "amanhã por volta das 7h";
+}
+function copiar(txt, okMsg) {
+  try { navigator.clipboard.writeText(txt).then(() => toast(okMsg || "Copiado"), () => toast("Selecione e copie manualmente")); } catch (e) { toast("Selecione e copie manualmente"); }
+}
+function aprovarSugestao(s) {
+  const d = s.dados || {};
+  if (s.tipo === "categoria") {
+    state.rules[s.key] = { kind: "gasto", cat: s.cat }; markCfg("rules");
+    const alvo = state.tx.filter(t => t.key === s.key && !t.manual && t.kind === "gasto");
+    for (const t of alvo) t.cat = s.cat; markTx(alvo);
+  } else if (s.tipo === "assinatura") {
+    state.assinaturas.push({ id: uid(), nome: d.nome, chave: d.chave, valor: d.valor, freq: d.freq || "mensal", proxima: d.proxima, status: "ativa", pagamento: d.pagamento || "cartao", cartao: cartaoNome(), cat: d.cat || "Apps e assinaturas" });
+    markCfg("assinaturas");
+  } else if (s.tipo === "parcela") {
+    state.parcelas.push({ id: uid(), desc: d.desc, chave: d.chave, total: d.total, n: d.n, valorParcela: d.valorParcela, atual: d.atual, proxima: d.proxima, pagamento: d.pagamento || "cartao", cartao: cartaoNome(), cat: d.cat || "Compras online" });
+    markCfg("parcelas");
+  }
+  state.sugestoes.itens = state.sugestoes.itens.filter(x => x.id !== s.id); markCfg("sugestoes");
+}
+function recusarSugestao(s) {
+  state.sugestoes.itens = state.sugestoes.itens.filter(x => x.id !== s.id);
+  state.sugestoes.rejeitadas = [...new Set([...(state.sugestoes.rejeitadas || []), s.id])]; markCfg("sugestoes");
+}
+function renderAutomacao() {
+  const a = state.automacao, itens = (state.sugestoes && state.sugestoes.itens) || [];
+  const prov = state.tx.filter(t => t.provisorio);
+  const status = !a ? `<div class="alert info"><span class="ic">i</span><div>A primeira verificação roda ${proximaVerificacao()}.</div></div>`
+    : a.ok === false ? `<div class="alert over"><span class="ic">!</span><div><b>A última verificação não terminou</b> (${tempoAtras(a.ultima)}): ${esc(a.erro || "erro desconhecido")}. Nada foi gravado pela metade; ela tenta de novo na próxima.</div></div>`
+    : `<div class="alert ok"><span class="ic">✓</span><div><b>Última verificação ${tempoAtras(a.ultima)}</b> · ${a.emails_lidos || 0} e-mail(s) do Nubank lido(s), ${a.novas || 0} lançamento(s) novo(s)${a.substituidas ? `, ${a.substituidas} do Apple Pay confirmado(s)` : ""}.</div></div>`;
+  const ICON = { categoria: "C", assinatura: "A", parcela: "P" }, COR = { categoria: "var(--s1)", assinatura: TIPO_COR.assinatura, parcela: TIPO_COR.parcela };
+  $("mAuto").innerHTML = `
+  <div class="card"><div class="card-head"><h2>Importação pelo Gmail</h2><span class="pill ok">ativa</span></div>
+    <span class="hint">3 verificações por dia, por volta das 7h, 15h e 23h. Próxima: ${proximaVerificacao()}.</span>
+    ${status}
+    ${a && a.detalhes && a.detalhes.length ? `<div class="hist">${a.detalhes.map(d => `<div><span>${esc(d)}</span><span></span></div>`).join("")}</div>` : ""}
+    <ol class="steps"><li><span>No app do Nubank, peça o extrato da conta (qualquer período). Ele chega no seu e-mail em PDF, OFX e CSV.</span></li><li><span>A fatura do cartão chega sozinha quando fecha (dia 27). A fatura em CSV também é lida, se você pedir.</span></li><li><span>Na próxima verificação, tudo entra aqui, sem duplicar, e você recebe um e-mail com o resumo.</span></li></ol></div>
+  <div class="card"><div class="card-head"><h2>Para você aprovar</h2>${itens.length > 1 ? `<button class="btn ghost small" id="aprTodas">Aprovar todas</button>` : ""}</div>
+    ${itens.length ? `<span class="hint">A automação encontrou isto nos seus extratos. Nada muda até você aprovar.</span><div class="ilist">${itens.map((s, i) => `<div class="irow static"><span class="av" style="--c:${COR[s.tipo]}">${ICON[s.tipo]}</span><span class="t"><span class="m">${esc(s.tipo === "categoria" ? s.loja : s.tipo === "assinatura" ? s.dados.nome : s.dados.desc)}</span><span class="c">${esc(s.tipo === "categoria" ? `categoria: ${s.cat} · ${s.vezes}x` : s.tipo === "assinatura" ? `assinatura de ${fmt(s.dados.valor)} por mês` : `parcela ${s.dados.atual}/${s.dados.n} de ${fmt(s.dados.valorParcela)}`)}</span></span><span class="a" style="flex-direction:row;gap:6px"><button class="btn small" data-apr="${i}">Aprovar</button><button class="btn ghost small" data-rec="${i}" aria-label="Recusar">✕</button></span></div>`).join("")}</div>` : `<p class="hint">Nada pendente. Quando aparecer uma loja sem categoria, uma assinatura nova ou uma compra parcelada, ela aparece aqui.</p>`}</div>
+  <div class="card"><div class="card-head"><h2>Compras no Apple Pay na hora</h2>${prov.length ? `<span class="pill info">${prov.length} provisória(s)</span>` : ""}</div>
+    <span class="hint">Cada compra por aproximação com o iPhone ou o Watch entra no mesmo minuto como provisória. Quando a fatura chega, ela é trocada pela compra real, sem duplicar.</span>
+    <div class="tokbox"><span class="label">Endereço</span><code class="sel">${FN_APPLE_PAY}</code><button class="btn ghost small" id="cpUrl">Copiar endereço</button>
+      <span class="label">Seu código secreto</span><code class="sel" id="tokTxt">${atalhoToken ? esc(atalhoToken) : atalhoCarregando ? "carregando…" : "não consegui carregar agora: toque em Gerar novo código"}</code>
+      <div class="row" style="justify-content:flex-start"><button class="btn ghost small" id="cpTok">Copiar código</button><button class="btn ghost small" id="novoTok">Gerar novo código</button></div></div>
+    <ol class="steps">
+      <li><span>No iPhone, abra o app <b>Atalhos</b> → aba <b>Automação</b> → <b>+</b> → <b>Transação</b>.</span></li>
+      <li><span>Em Cartões, marque o <b>Nubank</b>. Em Categoria, deixe todas. Escolha <b>Executar Imediatamente</b> e toque em Seguinte.</span></li>
+      <li><span>Toque em <b>Nova Automação em Branco</b> e adicione a ação <b>Obter Conteúdo do URL</b>. Cole o endereço acima.</span></li>
+      <li><span>Toque na seta da ação: Método <b>POST</b>. Em Cabeçalhos, adicione <b>x-cofrinho-token</b> com o seu código. Em Corpo da Solicitação, escolha <b>JSON</b> e adicione três campos de texto: <b>valor</b> = Quantia, <b>loja</b> = Comerciante, <b>cartao</b> = Cartão (as variáveis da Transação).</span></li>
+      <li><span>Opcional: adicione <b>Mostrar Notificação</b> com o <b>Conteúdo do URL</b> para ver a confirmação ("R$ 32,50 em IFOOD anotado no Cofrinho").</span></li>
+    </ol>
+    <span class="hint">Pix e compras online não passam pelo Apple Pay: essas continuam chegando pelo extrato e pela fatura.</span></div>
+  <div class="card"><h2>E-mails automáticos</h2><div class="hist">
+    <div><span>Aviso de importação</span><span class="hint">quando algo novo entra</span><small>o que foi importado, saldo e o que está para aprovar</small></div>
+    <div><span>Lembretes</span><span class="hint">de manhã</span><small>dia 1 e 15 para pedir o extrato; contas e faturas 2 dias antes do vencimento; assinaturas anuais 3 dias antes</small></div>
+    <div><span>Resumo da semana</span><span class="hint">segunda, 7h</span><small>gastos da semana, limites, livre para gastar e o que vence</small></div>
+    <div><span>Fechamento do mês</span><span class="hint">dia 1, 7h</span><small>entrou, gastou, investiu, onde mais gastou e o que o próximo mês já tem comprometido</small></div>
+  </div><span class="hint">Tudo vai para ${esc(state.user ? state.user.email : "o seu e-mail")}.</span></div>`;
+  for (const b of document.querySelectorAll("[data-apr]")) b.onclick = () => { const s = itens[+b.dataset.apr]; aprovarSugestao(s); persist(); render(); toast("Aprovado"); };
+  for (const b of document.querySelectorAll("[data-rec]")) b.onclick = () => { const s = itens[+b.dataset.rec]; recusarSugestao(s); persist(); render(); toast("Sugestão recusada"); };
+  if ($("aprTodas")) $("aprTodas").onclick = () => { for (const s of [...itens]) aprovarSugestao(s); persist(); render(); toast(`${itens.length} sugestões aprovadas`); };
+  $("cpUrl").onclick = () => copiar(FN_APPLE_PAY, "Endereço copiado");
+  $("cpTok").onclick = () => atalhoToken ? copiar(atalhoToken, "Código copiado") : carregarToken().then(render);
+  $("novoTok").onclick = () => { const s2 = sheet(`<h2>Gerar novo código?</h2><span class="hint">O código atual para de funcionar na hora. Depois, cole o novo no seu atalho.</span><div class="row"><button class="btn ghost" data-close>Cancelar</button><button class="btn" id="yesTok">Gerar</button></div>`); s2.querySelector("#yesTok").onclick = async () => { close(); await carregarToken(true); render(); toast("Novo código gerado"); }; };
+  if (!atalhoToken && !atalhoCarregando && !atalhoTentou) carregarToken().then(() => { if (state.tab === "mais" && state.sub.mais === "automacao") render(); });
+}
+
+const APP_VERSION = "11";
 // ===== utilidades =====
 const fmt = v => (v < -0.004 ? "−" : "") + "R$ " + Math.abs(v).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmt0 = v => (v < -0.5 ? "−" : "") + "R$ " + Math.abs(v).toLocaleString("pt-BR", { maximumFractionDigits: 0 });
@@ -1865,10 +2060,10 @@ const SUBS = {
   gastos: [["resumo", "Resumo"], ["extrato", "Extrato"]],
   contas: [["assinaturas", "Assinaturas"], ["parcelas", "Parcelas"], ["fixas", "Contas fixas"]],
   plano: [["distribuicao", "Distribuição"], ["simular", "Simular"], ["dicas", "Recomendações"]],
-  mais: [["perfil", "Renda e saldos"], ["carteira", "Carteira"], ["importar", "Importar"]]
+  mais: [["perfil", "Renda e saldos"], ["automacao", "Automação"], ["carteira", "Carteira"], ["importar", "Importar"]]
 };
 const ALIAS = { painel: ["gastos", "resumo"], resumo: ["gastos", "resumo"], extrato: ["gastos", "extrato"], limites: ["plano", "distribuicao"], plano: ["plano", "distribuicao"], simular: ["plano", "simular"], dicas: ["plano", "dicas"],
-  assinaturas: ["contas", "assinaturas"], parcelas: ["contas", "parcelas"], fixas: ["contas", "fixas"], contas: ["contas", null], perfil: ["mais", "perfil"], carteira: ["mais", "carteira"], importar: ["mais", "importar"], inicio: ["inicio", null], gastos: ["gastos", null], mais: ["mais", null] };
+  assinaturas: ["contas", "assinaturas"], parcelas: ["contas", "parcelas"], fixas: ["contas", "fixas"], contas: ["contas", null], perfil: ["mais", "perfil"], automacao: ["mais", "automacao"], carteira: ["mais", "carteira"], importar: ["mais", "importar"], inicio: ["inicio", null], gastos: ["gastos", null], mais: ["mais", null] };
 const MONTH_TABS = { gastos: 1 };
 
 // ===== desenho =====
@@ -1898,7 +2093,7 @@ function render() {
     else if (state.tab === "gastos") sub === "extrato" ? renderExtrato() : renderPainel();
     else if (state.tab === "contas") renderContas();
     else if (state.tab === "plano") renderPlano();
-    else if (state.tab === "mais") sub === "carteira" ? renderCarteira() : sub === "importar" ? renderImportar() : renderPerfil();
+    else if (state.tab === "mais") sub === "carteira" ? renderCarteira() : sub === "importar" ? renderImportar() : sub === "automacao" ? renderAutomacao() : renderPerfil();
   } catch (err) { console.error(err); showStatus("Algo deu errado ao montar esta tela: " + err.message); }
 }
 
@@ -2059,7 +2254,7 @@ function renderExtrato() {
   $("list").innerHTML = shown.length ? Object.entries(days).map(([d, ts]) => {
     const out = -ts.filter(t => t.kind === "gasto").reduce((a, t) => a + t.amount, 0);
     return `<div class="daysum"><span>${cap(new Date(d + "T12:00").toLocaleDateString("pt-BR", { weekday: "long", day: "numeric", month: "short" }).replace(".", ""))}</span><span class="num">${out > 0 ? "gastou " + fmt(out) : ""}</span></div>
-    <div class="txlist">${ts.map(t => `<button class="tx ${KCOLOR[t.kind]}" data-id="${esc(t.id)}"><span class="av" style="--c:${t.kind === "gasto" ? catColor(t.cat) : kindColor(t.kind)}">${t.kind === "caixinha" ? "◎" : esc(initials(t.merchant))}</span><span class="t"><div class="m">${esc(t.merchant)}${isCred(t) ? '<span class="badge">crédito</span>' : ""}${rcx.get(t.id) ? `<span class="badge b2">${rcx.get(t.id).tipo === "parcela" ? "parcela " + rcx.get(t.id).k + "/" + rcx.get(t.id).n : TIPO_NOME[rcx.get(t.id).tipo].toLowerCase()}</span>` : ""}</div><div class="c">${esc(subline(t))}</div></span><span class="a">${t.amount > 0 ? "+" : ""}${fmt(t.amount)}</span></button>`).join("")}</div>`;
+    <div class="txlist">${ts.map(t => `<button class="tx ${KCOLOR[t.kind]}" data-id="${esc(t.id)}"><span class="av" style="--c:${t.kind === "gasto" ? catColor(t.cat) : kindColor(t.kind)}">${t.kind === "caixinha" ? "◎" : esc(initials(t.merchant))}</span><span class="t"><div class="m">${esc(t.merchant)}${isCred(t) ? '<span class="badge">crédito</span>' : ""}${t.provisorio ? '<span class="badge b3">Apple Pay · provisória</span>' : ""}${rcx.get(t.id) ? `<span class="badge b2">${rcx.get(t.id).tipo === "parcela" ? "parcela " + rcx.get(t.id).k + "/" + rcx.get(t.id).n : TIPO_NOME[rcx.get(t.id).tipo].toLowerCase()}</span>` : ""}</div><div class="c">${esc(subline(t))}</div></span><span class="a">${t.amount > 0 ? "+" : ""}${fmt(t.amount)}</span></button>`).join("")}</div>`;
   }).join("") : `<p class="empty">Nada encontrado neste mês${state.query ? " para essa busca" : ""}.</p>`;
 }
 
@@ -2327,11 +2522,8 @@ async function handleFiles(files, kind) {
   if (!files.length) return;
   let novas = 0, repetidas = 0, backup = 0, ok = 0, saldoMsg = "";
   const erros = [];
-  const have = new Set(state.tx.map(t => t.id));
-  // o mesmo lançamento vindo em PDF e em OFX tem ids diferentes: compara data + valor + descrição
-  const sigs = new Map();
-  for (const t of state.tx) if (t.source === "conta") { const k = txSig(t); sigs.set(k, (sigs.get(k) || 0) + 1); }
   state.imports = state.imports || [];
+  let subst = 0;
   toast(files.length > 1 ? `Lendo ${files.length} arquivos…` : "Lendo arquivo…");
   for (const f of files) {
     let res;
@@ -2339,18 +2531,14 @@ async function handleFiles(files, kind) {
     if (res.erro) { erros.push(res.erro); continue; }
     if (res.backup) { const k = importBackup(res.backup); backup += k; ok++; state.imports.push({ arquivo: f.name, tipo: "backup", em: new Date().toISOString(), novas: k, repetidas: (res.backup.tx || []).length - k }); continue; }
     const rows = res.rows; ok++;
-    let fn = 0, fr = 0;
-    for (const r of rows) {
-      if (!r.id) r.id = "m-" + mkey(r.date + r.memo + r.amount);
-      if (have.has(r.id)) {
-        const ex = state.tx.find(t => t.id === r.id);
-        if (ex && r.fatura && ex.fatura !== r.fatura) { ex.fatura = r.fatura; markTx([ex]); }
-        repetidas++; fr++; continue;
-      }
-      if (r.source === "conta") { const k = txSig(r), n = sigs.get(k) || 0; if (n > 0) { sigs.set(k, n - 1); repetidas++; fr++; continue; } }
-      const nt = { ...r, ...classify(r, state.rules, state.settings), manual: false };
-      state.tx.push(nt); markTx([nt]); have.add(r.id); novas++; fn++;
-    }
+    // mesma junção da automação: não duplica entre PDF/OFX/CSV e confirma compras do Apple Pay
+    const m = mergeImport(state.tx, rows, state.rules, state.settings);
+    for (const t of m.update) markTx([t]);
+    if (m.remove.length) { const ids = new Set(m.remove.map(t => t.id)); state.tx = state.tx.filter(t => !ids.has(t.id)); markDel(m.remove); }
+    for (const t of m.add) state.tx.push(t);
+    markTx(m.add);
+    novas += m.novas; repetidas += m.repetidas; subst += m.substituidas;
+    const fn = m.novas, fr = m.repetidas;
     if (rows.saldo && !(state.perfil?.saldoConta && state.perfil.saldoConta.data > rows.saldo.data)) { state.perfil = { ...(state.perfil || {}), saldoConta: { ...rows.saldo, fonte: "extrato" } }; markCfg("perfil"); saldoMsg = ` · saldo atualizado (${fmt(rows.saldo.valor)})`; }
     state.imports.push({ arquivo: f.name, tipo: kind, em: new Date().toISOString(), novas: fn, repetidas: fr });
   }
@@ -2362,7 +2550,7 @@ async function handleFiles(files, kind) {
     render();
   }
   if (erros.length && !ok) { showImportErro(erros); return; }
-  toast((backup ? `Backup importado · ${backup} movimentações novas` : `${novas} novas · ${repetidas} já estavam no app${saldoMsg}`) + (erros.length ? ` · ${erros.length} arquivo(s) com problema` : ""));
+  toast((backup ? `Backup importado · ${backup} movimentações novas` : `${novas} novas · ${repetidas} já estavam no app${subst ? ` · ${subst} do Apple Pay confirmadas` : ""}${saldoMsg}`) + (erros.length ? ` · ${erros.length} arquivo(s) com problema` : ""));
   if (erros.length) showImportErro(erros);
 }
 function showImportErro(erros) {
