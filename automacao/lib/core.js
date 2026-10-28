@@ -313,7 +313,7 @@ function mergeImport(existing, rows, rules, settings) {
     // compra do Apple Pay pode ter sido no crédito (vem na fatura) ou no débito (vem no extrato como "Compra no débito")
     if (r.amount < 0 && (r.source === "cartao" || /^compra no d[ée]bito/i.test(r.memo || ""))) {
       const p = prov.find(t => !usedProv.has(t.id) && Math.abs(Math.round(t.amount * 100) - Math.round(r.amount * 100)) <= 1 && Math.abs(daysDiff(t.date, r.date)) <= 3);
-      if (p) { usedProv.add(p.id); res.remove.push(p); res.substituidas++; if (p.manual) { nt.kind = p.kind; nt.cat = p.cat; nt.manual = true; } }
+      if (p) { usedProv.add(p.id); res.remove.push(p); res.substituidas++; nt.origem = "apple_pay"; if (p.cartao) nt.cartao = p.cartao; if (p.manual) { nt.kind = p.kind; nt.cat = p.cat; nt.manual = true; } }
     }
     res.add.push(nt); res.novas++;
   }
@@ -321,6 +321,22 @@ function mergeImport(existing, rows, rules, settings) {
 }
 
 // assinatura para achar o mesmo lançamento vindo de formatos diferentes (OFX × PDF)
+// Apple Pay: o iPhone não diz se foi débito ou crédito. Decide pelo histórico já confirmado:
+// 1) última compra confirmada na mesma loja; 2) cartão da Carteira que até hoje só foi usado de um jeito (2+ compras); 3) débito.
+function formaApplePay(txs, cartao, key) {
+  const conf = (txs || []).filter(t => t.kind === "gasto" && t.amount < 0 && !t.provisorio && (t.source === "cartao" || t.source === "conta"));
+  const tipo = t => t.source === "cartao" ? "cartao" : "conta";
+  if (key) {
+    const loja = conf.filter(t => t.key === key && (t.source === "cartao" || /^compra no d[ée]bito/i.test(t.memo || "") || t.origem === "apple_pay")).sort((a, b) => b.date.localeCompare(a.date));
+    if (loja.length) return { source: tipo(loja[0]), motivo: "loja" };
+  }
+  if (cartao) {
+    const ap = conf.filter(t => t.origem === "apple_pay" && t.cartao === cartao);
+    const tipos = new Set(ap.map(tipo));
+    if (ap.length >= 2 && tipos.size === 1) return { source: [...tipos][0], motivo: "cartão" };
+  }
+  return { source: "conta", motivo: "padrão" };
+}
 function txSig(t) { return t.date + "|" + Math.round(t.amount * 100) + "|" + norm(t.memo).replace(/ /g, "").slice(0, 20); }
 
 function parseStatement(name, text) {
@@ -328,4 +344,4 @@ function parseStatement(name, text) {
   return parseCSV(text, name);
 }
 
-if (typeof module !== "undefined") module.exports = { renomearCats, CAT_RENOMES, precisaRevisao, parseNubankFaturaPDF, cardKey, parcelaKN, mergeImport, parseMoneyBR, parseOFX, parseCSV, parseNubankPDF, txSig, classify, parseStatement, mkey, norm, KINDS, CATS_GASTO, CATS_ENTRADA };
+if (typeof module !== "undefined") module.exports = { formaApplePay, renomearCats, CAT_RENOMES, precisaRevisao, parseNubankFaturaPDF, cardKey, parcelaKN, mergeImport, parseMoneyBR, parseOFX, parseCSV, parseNubankPDF, txSig, classify, parseStatement, mkey, norm, KINDS, CATS_GASTO, CATS_ENTRADA };

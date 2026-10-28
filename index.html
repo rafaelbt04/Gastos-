@@ -822,7 +822,7 @@ function mergeImport(existing, rows, rules, settings) {
     // compra do Apple Pay pode ter sido no crédito (vem na fatura) ou no débito (vem no extrato como "Compra no débito")
     if (r.amount < 0 && (r.source === "cartao" || /^compra no d[ée]bito/i.test(r.memo || ""))) {
       const p = prov.find(t => !usedProv.has(t.id) && Math.abs(Math.round(t.amount * 100) - Math.round(r.amount * 100)) <= 1 && Math.abs(daysDiff(t.date, r.date)) <= 3);
-      if (p) { usedProv.add(p.id); res.remove.push(p); res.substituidas++; if (p.manual) { nt.kind = p.kind; nt.cat = p.cat; nt.manual = true; } }
+      if (p) { usedProv.add(p.id); res.remove.push(p); res.substituidas++; nt.origem = "apple_pay"; if (p.cartao) nt.cartao = p.cartao; if (p.manual) { nt.kind = p.kind; nt.cat = p.cat; nt.manual = true; } }
     }
     res.add.push(nt); res.novas++;
   }
@@ -830,6 +830,22 @@ function mergeImport(existing, rows, rules, settings) {
 }
 
 // assinatura para achar o mesmo lançamento vindo de formatos diferentes (OFX × PDF)
+// Apple Pay: o iPhone não diz se foi débito ou crédito. Decide pelo histórico já confirmado:
+// 1) última compra confirmada na mesma loja; 2) cartão da Carteira que até hoje só foi usado de um jeito (2+ compras); 3) débito.
+function formaApplePay(txs, cartao, key) {
+  const conf = (txs || []).filter(t => t.kind === "gasto" && t.amount < 0 && !t.provisorio && (t.source === "cartao" || t.source === "conta"));
+  const tipo = t => t.source === "cartao" ? "cartao" : "conta";
+  if (key) {
+    const loja = conf.filter(t => t.key === key && (t.source === "cartao" || /^compra no d[ée]bito/i.test(t.memo || "") || t.origem === "apple_pay")).sort((a, b) => b.date.localeCompare(a.date));
+    if (loja.length) return { source: tipo(loja[0]), motivo: "loja" };
+  }
+  if (cartao) {
+    const ap = conf.filter(t => t.origem === "apple_pay" && t.cartao === cartao);
+    const tipos = new Set(ap.map(tipo));
+    if (ap.length >= 2 && tipos.size === 1) return { source: [...tipos][0], motivo: "cartão" };
+  }
+  return { source: "conta", motivo: "padrão" };
+}
 function txSig(t) { return t.date + "|" + Math.round(t.amount * 100) + "|" + norm(t.memo).replace(/ /g, "").slice(0, 20); }
 
 function parseStatement(name, text) {
@@ -837,7 +853,7 @@ function parseStatement(name, text) {
   return parseCSV(text, name);
 }
 
-if (typeof module !== "undefined") module.exports = { renomearCats, CAT_RENOMES, precisaRevisao, parseNubankFaturaPDF, cardKey, parcelaKN, mergeImport, parseMoneyBR, parseOFX, parseCSV, parseNubankPDF, txSig, classify, parseStatement, mkey, norm, KINDS, CATS_GASTO, CATS_ENTRADA };
+if (typeof module !== "undefined") module.exports = { formaApplePay, renomearCats, CAT_RENOMES, precisaRevisao, parseNubankFaturaPDF, cardKey, parcelaKN, mergeImport, parseMoneyBR, parseOFX, parseCSV, parseNubankPDF, txSig, classify, parseStatement, mkey, norm, KINDS, CATS_GASTO, CATS_ENTRADA };
 
 </script>
 <script>
@@ -1291,7 +1307,7 @@ function disponivel(st, today) {
   // então saem do dinheiro livre na hora (quando o extrato ou a fatura confirmar, entram pelo caminho normal)
   const faturaContada = new Set(faturas.map(f => f.venc));
   const recentes = (st.tx || []).filter(t => t.provisorio && t.kind === "gasto" && t.amount < 0 && t.date <= today && (!p.saldoConta || t.date >= p.saldoConta.data)
-    && !(fc && p.cartao && faturaContada.has(faturaDaData(t.date, +p.cartao.fechamento, +p.cartao.vencimento))));
+    && !(t.source === "cartao" && fc && p.cartao && faturaContada.has(faturaDaData(t.date, +p.cartao.fechamento, +p.cartao.vencimento))));
   const totRecentes = r2(-sum(recentes, t => t.amount));
   const comprometidoAteSalario = r2(totDeb + totFat + totRecentes);
   const seguro = saldo == null ? null : r2(saldo + cx - comprometidoAteSalario - p.colchao);
@@ -2156,7 +2172,7 @@ function openRevisar(t) {
   s.querySelector("#rvKeep").onclick = () => { t.revisado = true; t.manual = true; markTx([t]); close(); persist(); render(); toast("Mantido como está"); };
 }
 
-const APP_VERSION = "16";
+const APP_VERSION = "18";
 // ===== utilidades =====
 const fmt = v => (v < -0.004 ? "−" : "") + "R$ " + Math.abs(v).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmt0 = v => (v < -0.5 ? "−" : "") + "R$ " + Math.abs(v).toLocaleString("pt-BR", { maximumFractionDigits: 0 });
@@ -2379,7 +2395,7 @@ function renderExtrato() {
   $("list").innerHTML = shown.length ? Object.entries(days).map(([d, ts]) => {
     const out = -ts.filter(t => t.kind === "gasto").reduce((a, t) => a + t.amount, 0);
     return `<div class="daysum"><span>${cap(new Date(d + "T12:00").toLocaleDateString("pt-BR", { weekday: "long", day: "numeric", month: "short" }).replace(".", ""))}</span><span class="num">${out > 0 ? "gastou " + fmt(out) : ""}</span></div>
-    <div class="txlist">${ts.map(t => `<button class="tx ${KCOLOR[t.kind]}" data-id="${esc(t.id)}"><span class="av" style="--c:${t.kind === "gasto" ? catColor(t.cat) : kindColor(t.kind)}">${t.kind === "caixinha" ? "◎" : esc(initials(t.merchant))}</span><span class="t"><div class="m">${esc(t.merchant)}${isCred(t) ? '<span class="badge">crédito</span>' : ""}${t.provisorio ? '<span class="badge b3">Apple Pay · provisória</span>' : ""}${rcx.get(t.id) ? `<span class="badge b2">${rcx.get(t.id).tipo === "parcela" ? "parcela " + rcx.get(t.id).k + "/" + rcx.get(t.id).n : TIPO_NOME[rcx.get(t.id).tipo].toLowerCase()}</span>` : ""}</div><div class="c">${esc(subline(t))}</div></span><span class="a">${t.amount > 0 ? "+" : ""}${fmt(t.amount)}</span></button>`).join("")}</div>`;
+    <div class="txlist">${ts.map(t => `<button class="tx ${KCOLOR[t.kind]}" data-id="${esc(t.id)}"><span class="av" style="--c:${t.kind === "gasto" ? catColor(t.cat) : kindColor(t.kind)}">${t.kind === "caixinha" ? "◎" : esc(initials(t.merchant))}</span><span class="t"><div class="m">${esc(t.merchant)}${isCred(t) && !t.provisorio ? '<span class="badge">crédito</span>' : ""}${t.provisorio ? `<span class="badge b3">Apple Pay · ${isCred(t) ? "crédito" : "débito"}</span>` : ""}${rcx.get(t.id) ? `<span class="badge b2">${rcx.get(t.id).tipo === "parcela" ? "parcela " + rcx.get(t.id).k + "/" + rcx.get(t.id).n : TIPO_NOME[rcx.get(t.id).tipo].toLowerCase()}</span>` : ""}</div><div class="c">${esc(subline(t))}</div></span><span class="a">${t.amount > 0 ? "+" : ""}${fmt(t.amount)}</span></button>`).join("")}</div>`;
   }).join("") : `<p class="empty">Nada encontrado neste mês${state.query ? " para essa busca" : ""}.</p>`;
 }
 
@@ -2525,7 +2541,13 @@ function openTx(t) {
     <div><span class="label">Tipo</span><div class="seg" id="kseg">${Object.entries(KINDS).map(([k, v]) => `<button data-k="${k}" aria-pressed="${k === kind}">${v.label}</button>`).join("")}</div></div>
     <div><label class="label" for="catSel">Categoria</label><select id="catSel">${catOptions(kind, t.cat)}</select></div>
     ${t.key !== "caixinha" ? `<label class="check"><input type="checkbox" id="allChk" checked> Aplicar a tudo de “${esc(t.merchant)}”, agora e nas próximas importações</label>` : ""}
-    <div class="row"><button class="btn ghost" data-close>Cancelar</button><button class="btn" id="saveTx">Salvar</button></div>`);
+    <div class="row"><button class="btn ghost" data-close>Cancelar</button><button class="btn" id="saveTx">Salvar</button></div>
+    <button class="btn ghost danger" id="delTx" style="width:100%">Excluir lançamento</button>`);
+  const del = s.querySelector("#delTx"); let delArmed = false;
+  del.onclick = () => {
+    if (!delArmed) { delArmed = true; del.textContent = t.provisorio || t.manualAdd ? "Toque de novo para excluir" : "Toque de novo para excluir (se o mesmo extrato for importado de novo, ele volta)"; return; }
+    close(); state.tx = state.tx.filter(x => x.id !== t.id); markDel([t]); persist(); render(); toast("Lançamento excluído");
+  };
   s.querySelector("#kseg").onclick = e => {
     const b = e.target.closest("[data-k]"); if (!b) return; kind = b.dataset.k;
     s.querySelectorAll("#kseg button").forEach(x => x.setAttribute("aria-pressed", x.dataset.k === kind));

@@ -1,4 +1,4 @@
-// gerado por build_gmail.py — não editar à mão
+// gerado por build_engine.py — não editar à mão
 // ===== Núcleo: leitura de extratos e classificação =====
 const KINDS = {
   gasto: { label: "Gasto", short: "Gasto" },
@@ -56,7 +56,7 @@ const KEYWORDS = [
   [/conveniencia|oxxo|est comercial|\bmercado\b|minimercado|supermerc|carrefour|pao de acucar|atacad|assai|hortifruti/, "Conveniência e mercado"],
   [/\bvlt\b|uber|\b99\b|onibus|metro|posto|combust|estaciona|sem parar|veloe|emtu|renovias|pedagio|autoban|conectcar|ccr /, "Transporte"],
   [/sport|academia|smart ?fit|cinema|ingresso|teatro/, "Lazer"],
-  [/netflix|spotify|apple|google|prime video|disney|hbo|youtube|icloud|chatgpt|openai|anthropic|claude/, "Apps e assinaturas"],
+  [/netflix|spotify|apple(?! ?pay)|google|prime video|disney|hbo|youtube|icloud|chatgpt|openai|anthropic|claude/, "Apps e assinaturas"],
   [/bytedance|tiktok|appmax|jim com|mercadolivre|mercado livre|shopee|amazon|magalu|aliexpress|shein|kabum|pagseguro|paypal/, "Compras online"],
   [/farmacia|drogaria|droga|raia|pacheco|drogal|clinica|hospital|laborat/, "Saúde"],
   [/puc|faculdade|livraria|curso|udemy|alura/, "Educação"],
@@ -314,7 +314,7 @@ function mergeImport(existing, rows, rules, settings) {
     // compra do Apple Pay pode ter sido no crédito (vem na fatura) ou no débito (vem no extrato como "Compra no débito")
     if (r.amount < 0 && (r.source === "cartao" || /^compra no d[ée]bito/i.test(r.memo || ""))) {
       const p = prov.find(t => !usedProv.has(t.id) && Math.abs(Math.round(t.amount * 100) - Math.round(r.amount * 100)) <= 1 && Math.abs(daysDiff(t.date, r.date)) <= 3);
-      if (p) { usedProv.add(p.id); res.remove.push(p); res.substituidas++; if (p.manual) { nt.kind = p.kind; nt.cat = p.cat; nt.manual = true; } }
+      if (p) { usedProv.add(p.id); res.remove.push(p); res.substituidas++; nt.origem = "apple_pay"; if (p.cartao) nt.cartao = p.cartao; if (p.manual) { nt.kind = p.kind; nt.cat = p.cat; nt.manual = true; } }
     }
     res.add.push(nt); res.novas++;
   }
@@ -322,6 +322,22 @@ function mergeImport(existing, rows, rules, settings) {
 }
 
 // assinatura para achar o mesmo lançamento vindo de formatos diferentes (OFX × PDF)
+// Apple Pay: o iPhone não diz se foi débito ou crédito. Decide pelo histórico já confirmado:
+// 1) última compra confirmada na mesma loja; 2) cartão da Carteira que até hoje só foi usado de um jeito (2+ compras); 3) débito.
+function formaApplePay(txs, cartao, key) {
+  const conf = (txs || []).filter(t => t.kind === "gasto" && t.amount < 0 && !t.provisorio && (t.source === "cartao" || t.source === "conta"));
+  const tipo = t => t.source === "cartao" ? "cartao" : "conta";
+  if (key) {
+    const loja = conf.filter(t => t.key === key && (t.source === "cartao" || /^compra no d[ée]bito/i.test(t.memo || "") || t.origem === "apple_pay")).sort((a, b) => b.date.localeCompare(a.date));
+    if (loja.length) return { source: tipo(loja[0]), motivo: "loja" };
+  }
+  if (cartao) {
+    const ap = conf.filter(t => t.origem === "apple_pay" && t.cartao === cartao);
+    const tipos = new Set(ap.map(tipo));
+    if (ap.length >= 2 && tipos.size === 1) return { source: [...tipos][0], motivo: "cartão" };
+  }
+  return { source: "conta", motivo: "padrão" };
+}
 function txSig(t) { return t.date + "|" + Math.round(t.amount * 100) + "|" + norm(t.memo).replace(/ /g, "").slice(0, 20); }
 
 function parseStatement(name, text) {
@@ -329,7 +345,7 @@ function parseStatement(name, text) {
   return parseCSV(text, name);
 }
 
-if (typeof module !== "undefined") module.exports = { renomearCats, CAT_RENOMES, precisaRevisao, parseNubankFaturaPDF, cardKey, parcelaKN, mergeImport, parseMoneyBR, parseOFX, parseCSV, parseNubankPDF, txSig, classify, parseStatement, mkey, norm, KINDS, CATS_GASTO, CATS_ENTRADA };
+if (typeof module !== "undefined") module.exports = { formaApplePay, renomearCats, CAT_RENOMES, precisaRevisao, parseNubankFaturaPDF, cardKey, parcelaKN, mergeImport, parseMoneyBR, parseOFX, parseCSV, parseNubankPDF, txSig, classify, parseStatement, mkey, norm, KINDS, CATS_GASTO, CATS_ENTRADA };
 
 // ============================================================================
 // Motor financeiro do Cofrinho — funções puras, sem DOM.
@@ -655,7 +671,13 @@ function disponivel(st, today) {
   const fc = faturaCiclos(st, today), faturas = [];
   if (fc) for (const c of [fc.anterior, fc.atual]) if (!c.pago && c.venc >= today && c.venc < ate && c.total > 0) faturas.push(c);
   const totDeb = r2(sum(debitos, o => o.valor)), totFat = r2(sum(faturas, f => f.total));
-  const comprometidoAteSalario = r2(totDeb + totFat);
+  // compras do Apple Pay feitas depois do último extrato: ainda não estão no saldo nem numa fatura contada,
+  // então saem do dinheiro livre na hora (quando o extrato ou a fatura confirmar, entram pelo caminho normal)
+  const faturaContada = new Set(faturas.map(f => f.venc));
+  const recentes = (st.tx || []).filter(t => t.provisorio && t.kind === "gasto" && t.amount < 0 && t.date <= today && (!p.saldoConta || t.date >= p.saldoConta.data)
+    && !(t.source === "cartao" && fc && p.cartao && faturaContada.has(faturaDaData(t.date, +p.cartao.fechamento, +p.cartao.vencimento))));
+  const totRecentes = r2(-sum(recentes, t => t.amount));
+  const comprometidoAteSalario = r2(totDeb + totFat + totRecentes);
   const seguro = saldo == null ? null : r2(saldo + cx - comprometidoAteSalario - p.colchao);
   // necessidade diária planejada (essenciais variáveis + lazer) até o salário
   const diasAte = Math.max(daysBetween(today, ate), 0);
@@ -666,7 +688,7 @@ function disponivel(st, today) {
   const recebido = salarioRecebido(st, ymOf(today));
   const fimMes = dateIn(ymOf(today), daysInYM(ymOf(today)));
   const salarioAinda = p.salario && prox && prox <= fimMes ? (salarioInfo(st) || {}).valor || 0 : 0;
-  return { saldo, caixinhas: cx, colchao: p.colchao, proxSalario: prox, ate, diasAte, debitos, faturas, totDeb, totFat, comprometidoAteSalario, seguro, necessidade, investivel, paraReserva, paraInvest, recebido, salarioAinda, falta, saldoData: p.saldoConta ? p.saldoConta.data : null, fc };
+  return { saldo, caixinhas: cx, colchao: p.colchao, proxSalario: prox, ate, diasAte, debitos, faturas, totDeb, totFat, recentes, totRecentes, comprometidoAteSalario, seguro, necessidade, investivel, paraReserva, paraInvest, recebido, salarioAinda, falta, saldoData: p.saldoConta ? p.saldoConta.data : null, fc };
 }
 
 // ---------- projeção dos próximos meses ----------

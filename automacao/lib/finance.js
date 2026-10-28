@@ -326,7 +326,7 @@ function disponivel(st, today) {
   // então saem do dinheiro livre na hora (quando o extrato ou a fatura confirmar, entram pelo caminho normal)
   const faturaContada = new Set(faturas.map(f => f.venc));
   const recentes = (st.tx || []).filter(t => t.provisorio && t.kind === "gasto" && t.amount < 0 && t.date <= today && (!p.saldoConta || t.date >= p.saldoConta.data)
-    && !(fc && p.cartao && faturaContada.has(faturaDaData(t.date, +p.cartao.fechamento, +p.cartao.vencimento))));
+    && !(t.source === "cartao" && fc && p.cartao && faturaContada.has(faturaDaData(t.date, +p.cartao.fechamento, +p.cartao.vencimento))));
   const totRecentes = r2(-sum(recentes, t => t.amount));
   const comprometidoAteSalario = r2(totDeb + totFat + totRecentes);
   const seguro = saldo == null ? null : r2(saldo + cx - comprometidoAteSalario - p.colchao);
