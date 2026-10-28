@@ -1738,7 +1738,6 @@ function renderInicio() {
         ${d.caixinhas ? `<div><span>+ Caixinhas livres</span><b>${fmt(d.caixinhas)}</b></div>` : ""}
         <div><span>− Contas até o salário (${d.debitos.length})</span><b>${fmt(d.totDeb)}</b></div>
         <div><span>− Fatura${d.faturas.length ? ` que vence ${dCurta(d.faturas[0].venc)}` : "s até o salário"}</span><b>${fmt(d.totFat)}</b></div>
-        ${d.totRecentes ? `<div><span>− Compras no Apple Pay (${d.recentes.length})</span><b>${fmt(d.totRecentes)}</b></div>` : ""}
         ${d.colchao ? `<div><span>− Colchão mínimo</span><b>${fmt(d.colchao)}</b></div>` : ""}
       </div>`}
     <span class="foot-note">${saude[2]} Limite do cartão não conta como dinheiro.${d.saldoData && daysBetween(d.saldoData, T) > 3 ? ` Saldo informado há ${daysBetween(d.saldoData, T)} dias: atualize para mais precisão.` : ""}</span>`;
@@ -2157,7 +2156,7 @@ function openRevisar(t) {
   s.querySelector("#rvKeep").onclick = () => { t.revisado = true; t.manual = true; markTx([t]); close(); persist(); render(); toast("Mantido como está"); };
 }
 
-const APP_VERSION = "15";
+const APP_VERSION = "16";
 // ===== utilidades =====
 const fmt = v => (v < -0.004 ? "−" : "") + "R$ " + Math.abs(v).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmt0 = v => (v < -0.5 ? "−" : "") + "R$ " + Math.abs(v).toLocaleString("pt-BR", { maximumFractionDigits: 0 });
