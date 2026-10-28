@@ -322,7 +322,13 @@ function disponivel(st, today) {
   const fc = faturaCiclos(st, today), faturas = [];
   if (fc) for (const c of [fc.anterior, fc.atual]) if (!c.pago && c.venc >= today && c.venc < ate && c.total > 0) faturas.push(c);
   const totDeb = r2(sum(debitos, o => o.valor)), totFat = r2(sum(faturas, f => f.total));
-  const comprometidoAteSalario = r2(totDeb + totFat);
+  // compras do Apple Pay feitas depois do último extrato: ainda não estão no saldo nem numa fatura contada,
+  // então saem do dinheiro livre na hora (quando o extrato ou a fatura confirmar, entram pelo caminho normal)
+  const faturaContada = new Set(faturas.map(f => f.venc));
+  const recentes = (st.tx || []).filter(t => t.provisorio && t.kind === "gasto" && t.amount < 0 && t.date <= today && (!p.saldoConta || t.date >= p.saldoConta.data)
+    && !(fc && p.cartao && faturaContada.has(faturaDaData(t.date, +p.cartao.fechamento, +p.cartao.vencimento))));
+  const totRecentes = r2(-sum(recentes, t => t.amount));
+  const comprometidoAteSalario = r2(totDeb + totFat + totRecentes);
   const seguro = saldo == null ? null : r2(saldo + cx - comprometidoAteSalario - p.colchao);
   // necessidade diária planejada (essenciais variáveis + lazer) até o salário
   const diasAte = Math.max(daysBetween(today, ate), 0);
@@ -333,7 +339,7 @@ function disponivel(st, today) {
   const recebido = salarioRecebido(st, ymOf(today));
   const fimMes = dateIn(ymOf(today), daysInYM(ymOf(today)));
   const salarioAinda = p.salario && prox && prox <= fimMes ? (salarioInfo(st) || {}).valor || 0 : 0;
-  return { saldo, caixinhas: cx, colchao: p.colchao, proxSalario: prox, ate, diasAte, debitos, faturas, totDeb, totFat, comprometidoAteSalario, seguro, necessidade, investivel, paraReserva, paraInvest, recebido, salarioAinda, falta, saldoData: p.saldoConta ? p.saldoConta.data : null, fc };
+  return { saldo, caixinhas: cx, colchao: p.colchao, proxSalario: prox, ate, diasAte, debitos, faturas, totDeb, totFat, recentes, totRecentes, comprometidoAteSalario, seguro, necessidade, investivel, paraReserva, paraInvest, recebido, salarioAinda, falta, saldoData: p.saldoConta ? p.saldoConta.data : null, fc };
 }
 
 // ---------- projeção dos próximos meses ----------

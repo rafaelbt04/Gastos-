@@ -564,7 +564,7 @@ const KEYWORDS = [
   [/conveniencia|oxxo|est comercial|\bmercado\b|minimercado|supermerc|carrefour|pao de acucar|atacad|assai|hortifruti/, "Conveniência e mercado"],
   [/\bvlt\b|uber|\b99\b|onibus|metro|posto|combust|estaciona|sem parar|veloe|emtu|renovias|pedagio|autoban|conectcar|ccr /, "Transporte"],
   [/sport|academia|smart ?fit|cinema|ingresso|teatro/, "Lazer"],
-  [/netflix|spotify|apple|google|prime video|disney|hbo|youtube|icloud|chatgpt|openai|anthropic|claude/, "Apps e assinaturas"],
+  [/netflix|spotify|apple(?! ?pay)|google|prime video|disney|hbo|youtube|icloud|chatgpt|openai|anthropic|claude/, "Apps e assinaturas"],
   [/bytedance|tiktok|appmax|jim com|mercadolivre|mercado livre|shopee|amazon|magalu|aliexpress|shein|kabum|pagseguro|paypal/, "Compras online"],
   [/farmacia|drogaria|droga|raia|pacheco|drogal|clinica|hospital|laborat/, "Saúde"],
   [/puc|faculdade|livraria|curso|udemy|alura/, "Educação"],
@@ -1287,7 +1287,13 @@ function disponivel(st, today) {
   const fc = faturaCiclos(st, today), faturas = [];
   if (fc) for (const c of [fc.anterior, fc.atual]) if (!c.pago && c.venc >= today && c.venc < ate && c.total > 0) faturas.push(c);
   const totDeb = r2(sum(debitos, o => o.valor)), totFat = r2(sum(faturas, f => f.total));
-  const comprometidoAteSalario = r2(totDeb + totFat);
+  // compras do Apple Pay feitas depois do último extrato: ainda não estão no saldo nem numa fatura contada,
+  // então saem do dinheiro livre na hora (quando o extrato ou a fatura confirmar, entram pelo caminho normal)
+  const faturaContada = new Set(faturas.map(f => f.venc));
+  const recentes = (st.tx || []).filter(t => t.provisorio && t.kind === "gasto" && t.amount < 0 && t.date <= today && (!p.saldoConta || t.date >= p.saldoConta.data)
+    && !(fc && p.cartao && faturaContada.has(faturaDaData(t.date, +p.cartao.fechamento, +p.cartao.vencimento))));
+  const totRecentes = r2(-sum(recentes, t => t.amount));
+  const comprometidoAteSalario = r2(totDeb + totFat + totRecentes);
   const seguro = saldo == null ? null : r2(saldo + cx - comprometidoAteSalario - p.colchao);
   // necessidade diária planejada (essenciais variáveis + lazer) até o salário
   const diasAte = Math.max(daysBetween(today, ate), 0);
@@ -1298,7 +1304,7 @@ function disponivel(st, today) {
   const recebido = salarioRecebido(st, ymOf(today));
   const fimMes = dateIn(ymOf(today), daysInYM(ymOf(today)));
   const salarioAinda = p.salario && prox && prox <= fimMes ? (salarioInfo(st) || {}).valor || 0 : 0;
-  return { saldo, caixinhas: cx, colchao: p.colchao, proxSalario: prox, ate, diasAte, debitos, faturas, totDeb, totFat, comprometidoAteSalario, seguro, necessidade, investivel, paraReserva, paraInvest, recebido, salarioAinda, falta, saldoData: p.saldoConta ? p.saldoConta.data : null, fc };
+  return { saldo, caixinhas: cx, colchao: p.colchao, proxSalario: prox, ate, diasAte, debitos, faturas, totDeb, totFat, recentes, totRecentes, comprometidoAteSalario, seguro, necessidade, investivel, paraReserva, paraInvest, recebido, salarioAinda, falta, saldoData: p.saldoConta ? p.saldoConta.data : null, fc };
 }
 
 // ---------- projeção dos próximos meses ----------
@@ -1732,6 +1738,7 @@ function renderInicio() {
         ${d.caixinhas ? `<div><span>+ Caixinhas livres</span><b>${fmt(d.caixinhas)}</b></div>` : ""}
         <div><span>− Contas até o salário (${d.debitos.length})</span><b>${fmt(d.totDeb)}</b></div>
         <div><span>− Fatura${d.faturas.length ? ` que vence ${dCurta(d.faturas[0].venc)}` : "s até o salário"}</span><b>${fmt(d.totFat)}</b></div>
+        ${d.totRecentes ? `<div><span>− Compras no Apple Pay (${d.recentes.length})</span><b>${fmt(d.totRecentes)}</b></div>` : ""}
         ${d.colchao ? `<div><span>− Colchão mínimo</span><b>${fmt(d.colchao)}</b></div>` : ""}
       </div>`}
     <span class="foot-note">${saude[2]} Limite do cartão não conta como dinheiro.${d.saldoData && daysBetween(d.saldoData, T) > 3 ? ` Saldo informado há ${daysBetween(d.saldoData, T)} dias: atualize para mais precisão.` : ""}</span>`;
@@ -2150,7 +2157,7 @@ function openRevisar(t) {
   s.querySelector("#rvKeep").onclick = () => { t.revisado = true; t.manual = true; markTx([t]); close(); persist(); render(); toast("Mantido como está"); };
 }
 
-const APP_VERSION = "14";
+const APP_VERSION = "15";
 // ===== utilidades =====
 const fmt = v => (v < -0.004 ? "−" : "") + "R$ " + Math.abs(v).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmt0 = v => (v < -0.5 ? "−" : "") + "R$ " + Math.abs(v).toLocaleString("pt-BR", { maximumFractionDigits: 0 });
