@@ -279,7 +279,9 @@ const daysDiff = (a, b) => Math.round((new Date(b + "T12:00:00") - new Date(a + 
 // ===== lançamentos que pedem confirmação do usuário =====
 // Gasto sem categoria clara, Pix para/de pessoas (pode ser gasto, repasse ou reembolso) e entradas genéricas.
 function precisaRevisao(t) {
-  if (t.manual || t.revisado || t.provisorio) return false;
+  // compra do Apple Pay: o iPhone não diz se foi débito ou crédito, então pede confirmação até você confirmar (ou o extrato/fatura chegar)
+  if (t.provisorio) return t.origem === "apple_pay" && !t.formaConfirmada;
+  if (t.manual || t.revisado) return false;
   if (t.kind === "gasto" && (t.cat === "Outros gastos" || t.cat === "Pix para pessoas")) return true;
   if (t.kind === "entrada" && (t.cat === "Pix recebido" || t.cat === "Outras entradas")) return true;
   return false;
@@ -324,7 +326,7 @@ function mergeImport(existing, rows, rules, settings) {
 // Apple Pay: o iPhone não diz se foi débito ou crédito. Decide pelo histórico já confirmado:
 // 1) última compra confirmada na mesma loja; 2) cartão da Carteira que até hoje só foi usado de um jeito (2+ compras); 3) débito.
 function formaApplePay(txs, cartao, key) {
-  const conf = (txs || []).filter(t => t.kind === "gasto" && t.amount < 0 && !t.provisorio && (t.source === "cartao" || t.source === "conta"));
+  const conf = (txs || []).filter(t => t.kind === "gasto" && t.amount < 0 && (!t.provisorio || t.formaConfirmada) && (t.source === "cartao" || t.source === "conta"));
   const tipo = t => t.source === "cartao" ? "cartao" : "conta";
   if (key) {
     const loja = conf.filter(t => t.key === key && (t.source === "cartao" || /^compra no d[ée]bito/i.test(t.memo || "") || t.origem === "apple_pay")).sort((a, b) => b.date.localeCompare(a.date));

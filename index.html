@@ -788,7 +788,9 @@ const daysDiff = (a, b) => Math.round((new Date(b + "T12:00:00") - new Date(a + 
 // ===== lançamentos que pedem confirmação do usuário =====
 // Gasto sem categoria clara, Pix para/de pessoas (pode ser gasto, repasse ou reembolso) e entradas genéricas.
 function precisaRevisao(t) {
-  if (t.manual || t.revisado || t.provisorio) return false;
+  // compra do Apple Pay: o iPhone não diz se foi débito ou crédito, então pede confirmação até você confirmar (ou o extrato/fatura chegar)
+  if (t.provisorio) return t.origem === "apple_pay" && !t.formaConfirmada;
+  if (t.manual || t.revisado) return false;
   if (t.kind === "gasto" && (t.cat === "Outros gastos" || t.cat === "Pix para pessoas")) return true;
   if (t.kind === "entrada" && (t.cat === "Pix recebido" || t.cat === "Outras entradas")) return true;
   return false;
@@ -833,7 +835,7 @@ function mergeImport(existing, rows, rules, settings) {
 // Apple Pay: o iPhone não diz se foi débito ou crédito. Decide pelo histórico já confirmado:
 // 1) última compra confirmada na mesma loja; 2) cartão da Carteira que até hoje só foi usado de um jeito (2+ compras); 3) débito.
 function formaApplePay(txs, cartao, key) {
-  const conf = (txs || []).filter(t => t.kind === "gasto" && t.amount < 0 && !t.provisorio && (t.source === "cartao" || t.source === "conta"));
+  const conf = (txs || []).filter(t => t.kind === "gasto" && t.amount < 0 && (!t.provisorio || t.formaConfirmada) && (t.source === "cartao" || t.source === "conta"));
   const tipo = t => t.source === "cartao" ? "cartao" : "conta";
   if (key) {
     const loja = conf.filter(t => t.key === key && (t.source === "cartao" || /^compra no d[ée]bito/i.test(t.memo || "") || t.origem === "apple_pay")).sort((a, b) => b.date.localeCompare(a.date));
@@ -2135,8 +2137,8 @@ function revisarLista() { return state.tx.filter(precisaRevisao).sort((a, b) => 
 function renderRevisar() {
   const list = revisarLista();
   $("revisarBox").innerHTML = `<div class="card"><div class="card-head"><h2>Para você revisar</h2><span class="pill ${list.length ? "warn" : "ok"}">${list.length}</span></div>
-    <span class="hint">Lançamentos que o app não tem certeza do que são: gastos sem categoria clara, Pix para pessoas (gasto, repasse ou empréstimo?) e Pix recebidos (salário, reembolso ou repasse?). Toque para dizer o que é. Ao escolher, você pode aplicar a todos da mesma loja ou pessoa, e a regra vale para as próximas importações.</span>
-    ${list.length ? `<div class="txlist" style="box-shadow:none">${list.map(t => `<button class="tx ${KCOLOR[t.kind]}" data-rev="${esc(t.id)}"><span class="av" style="--c:${t.kind === "gasto" ? catColor(t.cat) : kindColor(t.kind)}">${esc(initials(t.merchant))}</span><span class="t"><div class="m">${esc(t.merchant)}${isCred(t) ? '<span class="badge">crédito</span>' : ""}</div><div class="c">${dCurta(t.date)} · hoje: ${esc(subline(t))}</div></span><span class="a">${t.amount > 0 ? "+" : ""}${fmt(t.amount)}</span></button>`).join("")}</div>` : `<p class="empty">Tudo revisado. Novos lançamentos duvidosos aparecem aqui.</p>`}</div>`;
+    <span class="hint">Lançamentos que o app não tem certeza do que são: compras do Apple Pay (débito ou crédito?), gastos sem categoria clara, Pix para pessoas (gasto, repasse ou empréstimo?) e Pix recebidos (salário, reembolso ou repasse?). Toque para dizer o que é. Ao escolher, você pode aplicar a todos da mesma loja ou pessoa, e a regra vale para as próximas importações.</span>
+    ${list.length ? `<div class="txlist" style="box-shadow:none">${list.map(t => `<button class="tx ${KCOLOR[t.kind]}" data-rev="${esc(t.id)}"><span class="av" style="--c:${t.kind === "gasto" ? catColor(t.cat) : kindColor(t.kind)}">${esc(initials(t.merchant))}</span><span class="t"><div class="m">${esc(t.merchant)}${t.provisorio ? `<span class="badge b3">Apple Pay · ${isCred(t) ? "crédito" : "débito"}?</span>` : isCred(t) ? '<span class="badge">crédito</span>' : ""}</div><div class="c">${dCurta(t.date)} · hoje: ${esc(subline(t))}</div></span><span class="a">${t.amount > 0 ? "+" : ""}${fmt(t.amount)}</span></button>`).join("")}</div>` : `<p class="empty">Tudo revisado. Novos lançamentos duvidosos aparecem aqui.</p>`}</div>`;
   for (const b of document.querySelectorAll("[data-rev]")) b.onclick = () => openRevisar(state.tx.find(t => t.id === b.dataset.rev));
 }
 function openRevisar(t) {
@@ -2149,11 +2151,16 @@ function openRevisar(t) {
   const s = sheet(`<div style="display:flex;gap:12px;align-items:center"><span class="av" style="--c:${catColor(t.cat)};width:44px;height:44px;border-radius:13px">${esc(initials(t.merchant))}</span><div style="min-width:0"><span class="label">${new Date(t.date + "T12:00").toLocaleDateString("pt-BR", { weekday: "short", day: "numeric", month: "long" })} · ${isCred(t) ? "crédito" : "conta"}</span><h2 style="font-size:1.15rem">${esc(t.merchant)}</h2></div></div>
     <div class="num" style="font-size:1.5rem">${t.amount > 0 ? "+" : ""}${fmt(t.amount)}</div>
     <div class="memo">${esc(t.memo)}</div>
+    ${t.provisorio ? `<div><span class="label">Pago no</span><div class="seg" id="rvForma"><button data-f="conta" aria-pressed="${!isCred(t)}">Débito</button><button data-f="cartao" aria-pressed="${isCred(t)}">Crédito</button></div><span class="hint">Compra do Apple Pay: o iPhone não informa se foi débito ou crédito. Confirme aqui; o app aprende para as próximas compras nesta loja.</span></div>` : ""}
     <div><span class="label">O que é?</span><div class="seg" id="rvKind">${opcoes.map(([k, l]) => `<button data-k="${k}" aria-pressed="${k === kind}">${esc(l)}</button>`).join("")}</div></div>
     <div><span class="label">Categoria</span><div class="seg" id="rvCat"></div></div>
     <label class="check"><input type="checkbox" id="rvAll" checked> Aplicar a ${t.amount > 0 ? "tudo que eu receber de" : "tudo que eu pagar para"} “${esc(t.merchant)}”, agora e nas próximas importações</label>
     <div class="row"><button class="btn ghost" id="rvKeep" style="margin-right:auto">Está certo assim</button><button class="btn ghost" data-close>Depois</button></div>`);
   let cat = cats(kind).includes(t.cat) ? t.cat : null;
+  let forma = t.source;
+  const rvForma = s.querySelector("#rvForma");
+  if (rvForma) rvForma.onclick = e => { const b = e.target.closest("[data-f]"); if (!b) return; forma = b.dataset.f; rvForma.querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", x.dataset.f === forma)); };
+  const aplicaForma = () => { if (!t.provisorio) return; t.source = forma; t.forma = forma === "cartao" ? "credito" : "debito"; t.formaConfirmada = true; };
   const drawCats = () => {
     s.querySelector("#rvCat").innerHTML = cats(kind).map(c => `<button data-c="${esc(c)}" aria-pressed="${c === cat}">${esc(c)}</button>`).join("");
   };
@@ -2164,15 +2171,16 @@ function openRevisar(t) {
     if (!alvo.includes(t)) alvo.push(t);
     if (all) { state.rules[t.key + (t.amount > 0 ? "|+" : "|-")] = { kind: k, cat: c }; markCfg("rules"); }
     for (const x of alvo) { x.kind = k; x.cat = c; x.manual = true; x.revisado = true; }
+    aplicaForma();
     markTx(alvo); close(); persist(); render();
     toast(alvo.length > 1 ? `${alvo.length} lançamentos atualizados` : "Classificação salva");
   };
   s.querySelector("#rvKind").onclick = e => { const b = e.target.closest("[data-k]"); if (!b) return; kind = b.dataset.k; cat = null; s.querySelectorAll("#rvKind button").forEach(x => x.setAttribute("aria-pressed", x.dataset.k === kind)); drawCats(); if (cats(kind).length === 1) salvar(kind, cats(kind)[0]); };
   s.querySelector("#rvCat").onclick = e => { const b = e.target.closest("[data-c]"); if (!b) return; salvar(kind, b.dataset.c); };
-  s.querySelector("#rvKeep").onclick = () => { t.revisado = true; t.manual = true; markTx([t]); close(); persist(); render(); toast("Mantido como está"); };
+  s.querySelector("#rvKeep").onclick = () => { t.revisado = true; t.manual = true; aplicaForma(); markTx([t]); close(); persist(); render(); toast("Mantido como está"); };
 }
 
-const APP_VERSION = "18";
+const APP_VERSION = "19";
 // ===== utilidades =====
 const fmt = v => (v < -0.004 ? "−" : "") + "R$ " + Math.abs(v).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmt0 = v => (v < -0.5 ? "−" : "") + "R$ " + Math.abs(v).toLocaleString("pt-BR", { maximumFractionDigits: 0 });
